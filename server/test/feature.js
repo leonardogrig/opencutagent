@@ -233,6 +233,10 @@ check("unknown RPC method rejected", threw);
     const saved = await edispatch("setApiKey", { key: "sk_abcd9999" }, { progress: () => {} });
     check("setApiKey verifies and saves", saved.ok && saved.verified && saved.last4 === "9999", saved);
     check("setApiKey wrote the .env", /ELEVENLABS_API_KEY=sk_abcd9999/.test(readFileSync(envPath, "utf8")));
+    // A speech_to_text-scoped key returns 400 (missing file), NOT 401 — must verify.
+    globalThis.fetch = async () => ({ ok: false, status: 400 });
+    const scoped = await edispatch("setApiKey", { key: "sk_scoped42" }, { progress: () => {} });
+    check("setApiKey verifies a speech_to_text-scoped key (400 = auth ok)", scoped.ok && scoped.verified, scoped);
     globalThis.fetch = async () => ({ ok: false, status: 401 });
     let badThrew = false;
     try { await edispatch("setApiKey", { key: "sk_bad" }, { progress: () => {} }); } catch (e) { badThrew = /rejected that key/.test(e.message); }

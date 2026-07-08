@@ -449,8 +449,18 @@ async function setApiKey(params, _helpers, ctx) {
   if (/\s/.test(key)) throw new Error("That doesn't look like an API key (it contains spaces). Copy it exactly from elevenlabs.io.");
   let verified = false;
   try {
-    const res = await fetch("https://api.elevenlabs.io/v1/user", {
+    // Verify against the SAME permission we actually use: speech_to_text.
+    // (The old /v1/user probe needed the unrelated user_read scope, so a key
+    // scoped to only speech_to_text — exactly what the modal tells users to
+    // create — was falsely "rejected".) POST with no file: a valid key gets a
+    // 400 "provide a file" validation error (auth passed); a bad or wrongly
+    // scoped key gets 401/403.
+    const form = new FormData();
+    form.append("model_id", "scribe_v2");
+    const res = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
+      method: "POST",
       headers: { "xi-api-key": key },
+      body: form,
       signal: AbortSignal.timeout(10000),
     });
     if (res.status === 401 || res.status === 403) {
@@ -459,7 +469,9 @@ async function setApiKey(params, _helpers, ctx) {
         { rejected: true }
       );
     }
-    verified = res.ok;
+    // Any non-auth response (400 missing-file, 200, etc.) means auth passed.
+    // A 5xx is an ElevenLabs outage, not a key problem: leave unverified.
+    verified = res.status < 500;
   } catch (err) {
     if (err.rejected) throw err;
     // Offline or ElevenLabs unreachable: save anyway, flag as unverified.
