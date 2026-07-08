@@ -3,7 +3,7 @@
 // after cutting never re-bills already-transcribed audio. Pure logic — no ffmpeg/Scribe.
 import {
   mergeIntervals, subtractIntervals, mergeWords,
-  planConcatBatches, buildConcatLayout, remapConcatWords,
+  planConcatBatches, buildConcatLayout, remapConcatWords, parseFfmpegOutTime,
 } from "../transcription/transcribe.js";
 
 let failures = 0;
@@ -142,6 +142,17 @@ const pairs = (iv) => iv.map((r) => [r.start, r.end]);
     { type: "word", text: "early", start: 1.0, end: 1.4 },
   ], layout);
   check("remapConcatWords: handles unsorted words", m.length === 2 && approx(m[0].start, 1) && approx(m[1].start, 51), m);
+}
+
+// --- parseFfmpegOutTime: extraction progress from ffmpeg -progress stderr chunks ---
+{
+  // out_time_ms is MICROseconds (ffmpeg quirk); the LAST value in a chunk wins
+  const sec = parseFfmpegOutTime("frame=0\nout_time_ms=1500000\nprogress=continue\nout_time_ms=2500000\n");
+  check("parseFfmpegOutTime: microsecond field, last value wins", approx(sec, 2.5), sec);
+  const hms = parseFfmpegOutTime("out_time=00:01:30.500000\nprogress=continue\n");
+  check("parseFfmpegOutTime: falls back to HH:MM:SS form", approx(hms, 90.5), hms);
+  check("parseFfmpegOutTime: chunk without progress -> null", parseFfmpegOutTime("size=  128kB bitrate=...") === null, parseFfmpegOutTime("size=..."));
+  check("parseFfmpegOutTime: garbage -> null, never NaN", parseFfmpegOutTime("") === null, parseFfmpegOutTime(""));
 }
 
 console.log(failures === 0 ? "\nAll transcribe-range checks passed." : `\n${failures} transcribe-range check(s) FAILED.`);

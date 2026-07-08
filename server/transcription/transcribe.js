@@ -27,11 +27,16 @@ export class TranscribeError extends Error {
   }
 }
 
-function run(bin, args) {
+function run(bin, args, onStderrChunk) {
   return new Promise((resolve, reject) => {
     const p = spawn(bin, args, { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
-    p.stderr.on("data", (d) => (stderr += d.toString()));
+    p.stderr.on("data", (d) => {
+      const s = d.toString();
+      stderr += s;
+      if (stderr.length > 8192) stderr = stderr.slice(-4096); // keep the tail for error messages
+      if (onStderrChunk) { try { onStderrChunk(s); } catch { /* progress must never kill the job */ } }
+    });
     p.on("error", (e) =>
       reject(new TranscribeError(`Could not run "${bin}": ${e.message}. Is it installed and on PATH?`))
     );
@@ -41,18 +46,41 @@ function run(bin, args) {
   });
 }
 
+// Fast+accurate seek: a coarse input seek (`-ss` BEFORE `-i`, keyframe-fast) lands a
+// couple of seconds early, then a precise output seek covers the remainder. Without the
+// input seek, ffmpeg decodes the whole file up to the window — minutes on a 2h source.
+const SEEK_CUSHION_SEC = 2;
+
 // Extract only the [startSec, endSec] window of the source as mono 16kHz PCM
-// (the de-facto STT input contract). `-ss`/`-t` come AFTER `-i` so the seek is
-// sample-accurate; the output starts at 0, so the Scribe word times are
-// window-relative and get `+startSec` added back to become source seconds.
+// (the de-facto STT input contract). The output starts at 0, so the Scribe word
+// times are window-relative and get `+startSec` added back to become source seconds.
 function extractAudioRange(mediaPath, startSec, endSec, destWav) {
   const dur = Math.max(0.05, endSec - startSec);
+  const seek = Math.max(0, startSec - SEEK_CUSHION_SEC);
   return run(FFMPEG_BIN, [
-    "-y", "-i", mediaPath,
-    "-ss", String(Math.max(0, startSec)), "-t", String(dur),
+    "-y", "-ss", String(seek), "-i", mediaPath,
+    "-ss", String(Math.max(0, startSec) - seek), "-t", String(dur),
     "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
     destWav,
   ]);
+}
+
+// Pull the latest output position (seconds) from an ffmpeg `-progress` stderr chunk.
+// ffmpeg emits `out_time_ms=` in MICROseconds (historical quirk) plus `out_time=` as
+// HH:MM:SS.micro; either works, prefer the numeric one. Returns null if the chunk has no
+// progress line.
+export function parseFfmpegOutTime(chunk) {
+  let sec = null;
+  const nums = String(chunk).match(/out_time_ms=(\d+)/g);
+  if (nums && nums.length) sec = Number(nums[nums.length - 1].slice("out_time_ms=".length)) / 1e6;
+  else {
+    const times = String(chunk).match(/out_time=(\d+):(\d+):(\d+(?:\.\d+)?)/g);
+    if (times && times.length) {
+      const [, h, m, s] = times[times.length - 1].match(/out_time=(\d+):(\d+):(\d+(?:\.\d+)?)/);
+      sec = Number(h) * 3600 + Number(m) * 60 + Number(s);
+    }
+  }
+  return sec != null && isFinite(sec) && sec >= 0 ? sec : null;
 }
 
 // Extract MANY [start,end] windows in ONE ffmpeg pass, concatenated with a short
@@ -60,10 +88,13 @@ function extractAudioRange(mediaPath, startSec, endSec, destWav) {
 // one output file — instead of one ffmpeg spawn per island. The filter graph is
 // passed via -filter_complex_script (a temp file) so hundreds of islands can't
 // blow past ARG_MAX.
-function extractConcatAudio(mediaPath, islands, spacerSec, destWav) {
+function extractConcatAudio(mediaPath, islands, spacerSec, destWav, onOutSec) {
+  // Input-seek to just before the batch's first island; atrim times shift accordingly
+  // (after an input seek the decoded stream's clock restarts near 0).
+  const seek = Math.max(0, islands[0].start - SEEK_CUSHION_SEC);
   const segs = islands.map((isl, i) => {
     const pad = i < islands.length - 1 && spacerSec > 0 ? `,apad=pad_dur=${spacerSec}` : "";
-    return `[0:a]atrim=start=${isl.start}:end=${isl.end},asetpts=PTS-STARTPTS${pad}[s${i}]`;
+    return `[0:a]atrim=start=${r3(isl.start - seek)}:end=${r3(isl.end - seek)},asetpts=PTS-STARTPTS${pad}[s${i}]`;
   });
   const filter =
     segs.join(";") + ";" +
@@ -71,13 +102,17 @@ function extractConcatAudio(mediaPath, islands, spacerSec, destWav) {
     `concat=n=${islands.length}:v=0:a=1[out]`;
   const scriptPath = `${destWav}.filter`;
   writeFileSync(scriptPath, filter);
+  const onChunk = onOutSec
+    ? (chunk) => { const sec = parseFfmpegOutTime(chunk); if (sec != null) onOutSec(sec); }
+    : undefined;
   const done = run(FFMPEG_BIN, [
-    "-y", "-i", mediaPath,
+    "-y", "-ss", String(seek), "-i", mediaPath,
     "-filter_complex_script", scriptPath,
     "-map", "[out]",
     "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
+    "-nostats", "-progress", "pipe:2",
     destWav,
-  ]);
+  ], onChunk);
   return done.finally(() => { try { rmSync(scriptPath, { force: true }); } catch { /* ignore */ } });
 }
 
@@ -286,6 +321,9 @@ function cacheKey(mediaPath) {
  */
 export async function transcribeSourceRanges(mediaPath, ranges, opts = {}) {
   const { cacheDir, model, language, numSpeakers, refresh = false } = opts;
+  // Progress messages ("Transcribing: 42% (3/8 parts done)") for the panel status line;
+  // a throwing callback must never kill a transcription that's billing credits.
+  const onProgress = (msg) => { if (opts.onProgress) { try { opts.onProgress(msg); } catch { /* ignore */ } } };
   const apiKey = liveEnv("ELEVENLABS_API_KEY");
   if (!apiKey) {
     throw new TranscribeError(
@@ -331,10 +369,33 @@ export async function transcribeSourceRanges(mediaPath, ranges, opts = {}) {
   // batches — each batch is ONE ffmpeg concat + ONE Scribe call, not one call per island.
   const toDo = mergeIntervals(uncovered, { mergeGapSec, padSec: 0 });
   const spacerSec = 1.0; // silence between islands in a concat wav; keeps Scribe from joining words
-  const batchMaxSec = Number(liveEnv("EDITAGENT_TRANSCRIBE_BATCH_SEC") || 1800);
+  const batchMaxSec = Number(liveEnv("EDITAGENT_TRANSCRIBE_BATCH_SEC") || 360);
+  const concurrency = Math.max(1, Math.min(8, Number(liveEnv("EDITAGENT_TRANSCRIBE_CONCURRENCY") || 3)));
   const batches = planConcatBatches(toDo, batchMaxSec);
   let words = cache.words;
   let islands = cache.islands;
+
+  // --- truthful progress: % = audio seconds fully transcribed / total needed. Extraction
+  // adds a small measured contribution (ffmpeg -progress) so long extracts visibly move,
+  // but a Scribe call in flight never fakes movement — parts are small, so it ticks often.
+  const audioOf = (isls) => isls.reduce((a, r) => a + (r.end - r.start), 0);
+  const totalAudio = audioOf(toDo);
+  let doneAudio = 0;
+  let doneBatches = 0;
+  const extractedSec = new Map(); // batch index -> seconds extracted so far
+  let lastReportAt = 0;
+  const report = (force = false) => {
+    const now = Date.now();
+    if (!force && now - lastReportAt < 400) return; // don't flood the WS/status line
+    lastReportAt = now;
+    let extracting = 0;
+    for (const sec of extractedSec.values()) extracting += sec;
+    // extraction counts for at most 30% of a part's weight; completion is the real signal
+    const pct = doneBatches >= batches.length
+      ? 100
+      : totalAudio > 0 ? Math.min(99, Math.round(((doneAudio + extracting * 0.3) / totalAudio) * 100)) : 0;
+    onProgress(`Transcribing: ${pct}% (${doneBatches}/${batches.length} parts done)`);
+  };
 
   const recordBilled = (billedSec) =>
     recordUsage({
@@ -353,9 +414,11 @@ export async function transcribeSourceRanges(mediaPath, ranges, opts = {}) {
     writeFileSync(rangedPath, JSON.stringify({ model: scribeModel(model), islands, words }, null, 2));
   };
   const scribeOpts = { model, language, numSpeakers };
-  const tmpName = () => join(tmpdir(), `editagent-${Date.now()}-${Math.floor(performance.now())}.wav`);
+  let tmpSeq = 0;
+  const tmpName = () => join(tmpdir(), `editagent-${Date.now()}-${process.pid}-${++tmpSeq}.wav`);
 
   // Single-island transcription (also the fallback path if a concat extract fails).
+  // Does NOT touch the batch progress counters; its callers do.
   const transcribeOne = async (isl) => {
     const tmpWav = tmpName();
     try {
@@ -369,10 +432,23 @@ export async function transcribeSourceRanges(mediaPath, ranges, opts = {}) {
     }
   };
 
-  for (const batch of batches) {
+  const processBatch = async (batch, idx) => {
+    const batchAudio = audioOf(batch);
+    try {
+      await transcribeBatch(batch, idx, batchAudio);
+    } finally {
+      // A finished part counts fully below; a failed one stops claiming extraction progress.
+      extractedSec.delete(idx);
+    }
+    doneAudio += batchAudio;
+    doneBatches += 1;
+    report(true);
+  };
+
+  const transcribeBatch = async (batch, idx, batchAudio) => {
     if (batch.length === 1) {
       await transcribeOne(batch[0]);
-      continue;
+      return;
     }
     const { layout, totalSec } = buildConcatLayout(batch, spacerSec);
     const tmpWav = tmpName();
@@ -382,14 +458,19 @@ export async function transcribeSourceRanges(mediaPath, ranges, opts = {}) {
         `${totalSec.toFixed(0)}s of audio]: ${basename(mediaPath)}`
       );
       try {
-        await extractConcatAudio(mediaPath, batch, spacerSec, tmpWav);
+        await extractConcatAudio(mediaPath, batch, spacerSec, tmpWav, (outSec) => {
+          // out time includes spacers; scale it back to island-audio seconds
+          extractedSec.set(idx, Math.min(batchAudio, (outSec / Math.max(totalSec, 0.001)) * batchAudio));
+          report();
+        });
       } catch (e) {
-        // Concat filter failed (odd media/old ffmpeg) — fall back to per-island extraction
+        // Concat filter failed (odd media/old ffmpeg): fall back to per-island extraction
         // for this batch. Scribe/quota errors below are NOT retried per-island: the audio
         // isn't the problem there, and retrying would re-bill.
         log(`concat extract failed (${e.message.slice(0, 200)}); falling back to per-range transcription`);
+        extractedSec.delete(idx);
         for (const isl of batch) await transcribeOne(isl);
-        continue;
+        return;
       }
       log(`transcribing via Scribe (${batch.length} ranges, one call): ${basename(mediaPath)}`);
       const payload = await callScribe(tmpWav, apiKey, scribeOpts);
@@ -398,6 +479,30 @@ export async function transcribeSourceRanges(mediaPath, ranges, opts = {}) {
     } finally {
       try { rmSync(tmpWav, { force: true }); } catch { /* ignore */ }
     }
+  };
+
+  // Run batches through a small concurrent pool: ElevenLabs transcribes them in parallel,
+  // so wall clock is roughly the slowest part instead of the sum. On the first error no
+  // NEW batch starts (in-flight ones settle); completed batches are already committed to
+  // the cache, so a retry after quota reset only pays for what's still missing.
+  if (batches.length) {
+    report(true);
+    let nextIdx = 0;
+    let firstErr = null;
+    const worker = async () => {
+      while (!firstErr) {
+        const idx = nextIdx++;
+        if (idx >= batches.length) return;
+        try {
+          await processBatch(batches[idx], idx);
+        } catch (e) {
+          if (!firstErr) firstErr = e;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, worker));
+    if (firstErr) throw firstErr;
+    onProgress(`Transcription done (${batches.length} part(s), ${Math.round(totalAudio)}s of audio).`);
   }
   log(`ranged transcript saved: ${basename(rangedPath)} (${words.length} words, ${islands.length} island(s))`);
   return { payload: { words }, cached: false, path: rangedPath };

@@ -122,7 +122,7 @@ export async function buildReview(ctx, opts = {}, onProgress = () => {}) {
     }
     if (!wordsByMedia.has(clip.mediaPath)) {
       onProgress(`Transcribing ${clip.mediaPath.split(/[\\\/]/).pop()}…`);
-      const { payload } = await transcribeSourceRanges(clip.mediaPath, rangesByMedia.get(clip.mediaPath), { cacheDir: ctx.cacheDir, refresh: opts.refresh, model: opts.transcribeModel });
+      const { payload } = await transcribeSourceRanges(clip.mediaPath, rangesByMedia.get(clip.mediaPath), { cacheDir: ctx.cacheDir, refresh: opts.refresh, model: opts.transcribeModel, onProgress });
       wordsByMedia.set(clip.mediaPath, payload.words || []);
     }
     // Slice the source words to THIS clip's window, then phrase within the clip
