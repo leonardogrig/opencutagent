@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:;" />
+    <title>OpenCutAgent</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <span class="brand">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.8 5.9L20 10l-6.2 2.1L12 18l-1.8-5.9L4 10l6.2-2.1z"/></svg>
+          </span>
+          OPENCUTAGENT
+        </span>
+        <span class="head-right">
+          <span class="conn"><span id="dot" class="dot"></span><span id="connText">Starting…</span></span>
+          <button id="aiConfigBtn" class="icon-btn" data-tip="Settings: pick the Claude model for the AI buttons, add your ElevenLabs API key, pair the panel with a Claude Code chat, or clear the cache." aria-haspopup="true" aria-expanded="false">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="ic ic-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+        </span>
+      </header>
+
+      <!-- Claude + storage settings (opened from the header sparkle button). AI is only
+           used by the explicit "Suggest threshold" / "Analyze w/ Claude" actions. -->
+      <div id="aiPop" class="pop" hidden role="dialog" aria-label="Claude and storage settings">
+        <div class="pop-sec">
+          <div class="pop-title">Config</div>
+          <div id="aiCtls" class="pop-group">
+            <!-- value = tier alias (always valid, auto-resolves to the newest of that tier);
+                 label shows the current version for clarity (bump when a newer model ships). -->
+            <label class="pop-row"><span>Model</span>
+              <select id="aiModel" title="Model for “Suggest threshold” and “Analyze w/ Claude” (Latest = your Claude Code default).">
+                <option value="latest">Latest</option>
+                <option value="opus">Opus 4.8</option>
+                <option value="sonnet">Sonnet 4.6</option>
+                <option value="haiku">Haiku 4.5</option>
+                <option value="fable">Fable 5</option>
+              </select>
+            </label>
+            <label class="pop-row"><span>Effort</span>
+              <select id="aiEffort" title="Reasoning effort for the panel's AI actions.">
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+                <option value="xhigh">X-High</option>
+                <option value="max">Max</option>
+              </select>
+            </label>
+          </div>
+          <label class="pop-row sync" data-tip="A way to talk to Claude about this project. On: the panel pairs with your Claude Code chat through the premiere MCP server, so you can ask for edits in chat (like “cut the retakes”) and watch the results appear here. Off: the AI buttons run Claude headlessly on your subscription, no chat needed.">
+            <span>Sync with Claude Code</span>
+            <input type="checkbox" id="syncToggle" class="switch" role="switch" />
+          </label>
+          <div id="aiHint" class="pop-hint">The “Suggest threshold” and “Analyze w/ Claude” buttons run Claude headlessly here, on your Claude subscription. Turn on Sync to drive OpenCutAgent from a Claude Code chat instead.</div>
+        </div>
+        <div class="pop-sec">
+          <div class="pop-title">Transcription</div>
+          <label class="pop-row"><span>Model</span>
+            <select id="sttModel">
+              <option value="scribe_v2">Scribe v2</option>
+              <option value="scribe_v1">Scribe v1 (retired)</option>
+            </select>
+          </label>
+          <div class="pop-hint">ElevenLabs speech to text model used by Load ($0.22 per audio hour). Already-transcribed audio stays cached; Clear cache to re-transcribe with a different model.</div>
+        </div>
+        <div class="pop-sec">
+          <div class="pop-title">Storage</div>
+          <div class="pop-row"><span>Cached transcripts &amp; scans</span><span id="cacheSize" class="pop-val">…</span></div>
+          <button id="clearCacheBtn" class="sm danger-text">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+            <span class="lbl">Clear cache</span>
+          </button>
+          <div class="pop-hint">Transcripts and audio scans are cached per source file so reloads are free. Clearing means the next Load re-transcribes (ElevenLabs credits).</div>
+        </div>
+        <div class="pop-sec">
+          <div class="pop-title">ElevenLabs</div>
+          <div class="pop-row"><span>API key</span><span id="keyState" class="pop-val">…</span></div>
+          <button id="keyBtn" class="sm" data-tip="The ElevenLabs API key that pays for transcription (Load segments / Analyze w/ Claude). Silence removal never needs it.">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+            <span class="lbl">Add API key</span>
+          </button>
+          <div class="pop-hint">Transcription for the Retakes tab runs on ElevenLabs Scribe ($0.22 per audio hour, billed to your ElevenLabs account).</div>
+        </div>
+        <div class="pop-sec">
+          <div class="pop-title">Usage</div>
+          <button id="usageBtn" class="sm" data-tip="Every AI run this project has made: ElevenLabs transcription (billed per audio minute) and headless Claude analyses (included in your Claude subscription).">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>
+            <span class="lbl">View AI usage log</span>
+          </button>
+        </div>
+        <div class="pop-sec">
+          <button id="advToggle" class="adv-toggle" aria-expanded="false">
+            <svg class="ic ic-sm adv-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+            <span>Advanced</span>
+          </button>
+          <div id="advBody" class="adv-body" hidden>
+            <div class="pop-hint adv-warn">These tune how the server works. If unsure, don't change anything here; the defaults are right for almost everyone.</div>
+            <div id="advList" class="adv-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="topbar" class="topbar" aria-hidden="true"><div class="topbar-fill"></div></div>
+
+      <nav class="tabs">
+        <button class="tab active" data-tab="silence">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 10v4M7.5 6v12M12 3v18M16.5 7v10M21 10v4"/></svg>
+          Remove Silences
+        </button>
+        <button class="tab" data-tab="retake">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88M14.47 14.48 20 20M8.12 8.12 12 12"/></svg>
+          Retakes
+        </button>
+      </nav>
+
+      <!-- ===================== REMOVE SILENCES ===================== -->
+      <section id="tab-silence" class="tabpane">
+        <div class="sil">
+          <div class="sil-bar">
+            <button id="silScanBtn" class="primary" disabled data-tip="Reads the timeline's audio and draws its loudness (ffmpeg, no AI, no transcription). Levels are cached per source file, so rescans after editing are fast.">
+              <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+              <span class="lbl">Scan Audio</span>
+            </button>
+            <button id="silStopBtn" class="danger" style="display:none">
+              <svg class="ic" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+              Stop
+            </button>
+            <span id="silStatus" class="summary"></span>
+            <span class="viewctl">
+              <label class="chk follow" data-tip="Keeps the view scrolled to Premiere's playhead during playback. Click the waveform to move the playhead there; drag to pan the view.">
+                <input type="checkbox" id="silFollow" class="switch" role="switch" checked /> Follow
+              </label>
+              <button id="zoomOut" class="ghost" title="Zoom out">−</button>
+              <button id="zoomIn" class="ghost" title="Zoom in">+</button>
+              <button id="zoomFit" class="ghost" title="Fit the whole timeline">Fit</button>
+            </span>
+          </div>
+
+          <div class="sil-scroll">
+            <div class="viz-wrap">
+              <canvas id="silCanvas"></canvas>
+              <div id="vizEmpty" class="viz-empty">
+                <div class="empty-state">
+                  <div class="es-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 10v4M7.5 6v12M12 3v18M16.5 7v10M21 10v4"/></svg></div>
+                  <div class="es-title">No audio scanned yet</div>
+                  <div class="es-sub">Open a sequence in Premiere, then <b>Scan Audio</b> to read the timeline's loudness.</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="legend">
+              <span><i class="sw margin"></i>Margins</span>
+              <span><i class="sw silence"></i>Silences</span>
+              <span><i class="sw thresh"></i>Noise Threshold</span>
+              <span class="legend-hint">drag to pan · scroll to zoom</span>
+            </div>
+
+            <div class="overview-wrap">
+              <canvas id="silOverview"></canvas>
+              <div class="ov-times"><span>00:00</span><span id="ovEnd">--:--</span></div>
+            </div>
+
+            <div class="controls">
+              <div class="ctl-block">
+                <div class="thr-head">
+                  <label class="h">Noise Threshold</label>
+                  <span class="thr-value" id="thrValue">−36 dB</span>
+                  <span class="grow"></span>
+                  <a id="calcAi" class="calc-ai" data-tip="Claude reads the measured loudness and picks a threshold that fits this recording. Uses the model chosen in the header's ✦ settings. Audio below the threshold counts as silence.">Suggest threshold</a>
+                </div>
+                <div class="thr-row">
+                  <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/></svg>
+                  <input type="range" id="thrSlider" min="-60" max="0" step="1" value="-36" />
+                  <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14"/></svg>
+                </div>
+              </div>
+
+              <div class="ctl-block">
+                <label class="h">Presets</label>
+                <div class="presets" id="presetRow"></div>
+              </div>
+
+              <div class="grid2" id="paramGrid">
+                <div class="num" data-param="minSilence">
+                  <label>Remove silences longer than <span class="info">ⓘ</span></label>
+                  <div class="inp"><input id="minSilence" type="number" min="0" step="10" value="120" /><span class="unit">ms</span></div>
+                </div>
+                <div class="num" data-param="keepTalk">
+                  <label>Keep speech longer than <span class="info">ⓘ</span></label>
+                  <div class="inp"><input id="keepTalk" type="number" min="0" step="10" value="400" /><span class="unit">ms</span></div>
+                </div>
+                <div class="num" data-param="marginBefore">
+                  <label>Margin before <span class="info">ⓘ</span></label>
+                  <div class="inp"><input id="marginBefore" type="number" min="0" step="10" value="120" /><span class="unit">ms</span></div>
+                </div>
+                <div class="num" data-param="marginAfter">
+                  <label>Margin after <span class="info">ⓘ</span></label>
+                  <div class="inp"><input id="marginAfter" type="number" min="0" step="10" value="120" /><span class="unit">ms</span></div>
+                </div>
+              </div>
+              <!-- One diagram explains all four fields: two speech blocks around a silence.
+                   Hovering or focusing a field highlights its part and swaps the caption. -->
+              <div class="param-viz" id="paramViz">
+                <svg viewBox="0 0 260 62" aria-hidden="true">
+                  <rect x="8" y="12" width="70" height="26" rx="3" class="pvz pvz-speech"/>
+                  <rect x="192" y="12" width="60" height="26" rx="3" class="pvz pvz-speech"/>
+                  <text x="43" y="28" text-anchor="middle" style="fill:#b4ada3;font-size:8px">speech</text>
+                  <text x="222" y="28" text-anchor="middle" style="fill:#b4ada3;font-size:8px">speech</text>
+                  <rect x="78" y="12" width="14" height="26" class="pvz pvz-ma"/>
+                  <rect x="92" y="12" width="86" height="26" class="pvz pvz-removed"/>
+                  <rect x="178" y="12" width="14" height="26" class="pvz pvz-mb"/>
+                  <rect x="128" y="20" width="9" height="18" rx="2" class="pvz pvz-blip"/>
+                  <g class="pv pv-minSilence">
+                    <line x1="78" y1="50" x2="192" y2="50"/><line x1="78" y1="46" x2="78" y2="54"/><line x1="192" y1="46" x2="192" y2="54"/>
+                    <text x="135" y="60" text-anchor="middle">the whole silence</text>
+                  </g>
+                  <g class="pv pv-keepTalk">
+                    <rect x="123" y="15" width="19" height="27" rx="3"/>
+                    <text x="132" y="56" text-anchor="middle">short pop</text>
+                  </g>
+                  <g class="pv pv-marginAfter">
+                    <line x1="78" y1="50" x2="92" y2="50"/><line x1="78" y1="46" x2="78" y2="54"/><line x1="92" y1="46" x2="92" y2="54"/>
+                    <text x="85" y="60" text-anchor="middle">kept air</text>
+                  </g>
+                  <g class="pv pv-marginBefore">
+                    <line x1="178" y1="50" x2="192" y2="50"/><line x1="178" y1="46" x2="178" y2="54"/><line x1="192" y1="46" x2="192" y2="54"/>
+                    <text x="185" y="60" text-anchor="middle">kept air</text>
+                  </g>
+                </svg>
+                <div class="tv-text">
+                  <div class="tv-cap" id="paramCaption">How a cut is shaped: green margins are kept, the red span is removed.</div>
+                </div>
+              </div>
+
+              <div class="ctl-block">
+                <label class="h">When silence is found</label>
+                <div class="segctl" id="mgmtRadios">
+                  <label class="segopt"><input type="radio" name="mgmt" value="remove" checked /><span>Remove</span></label>
+                  <label class="segopt"><input type="radio" name="mgmt" value="keepSpaces" /><span>Keep gaps</span></label>
+                  <label class="segopt"><input type="radio" name="mgmt" value="mute" /><span>Mute</span></label>
+                  <label class="segopt"><input type="radio" name="mgmt" value="keep" /><span>Keep</span></label>
+                </div>
+                <div class="segctl-cap" id="mgmtCaption">Cut the silences and ripple the timeline tight.</div>
+              </div>
+
+              <div class="ctl-block">
+                <label class="h">Transitions <span class="info" data-tip="How the audio should behave across each cut. v1 applies clean cuts; the chosen style is recorded for future crossfade support.">ⓘ</span></label>
+                <div class="segctl" id="transRadios">
+                  <label class="segopt"><input type="radio" name="trans" value="none" checked /><span>None</span></label>
+                  <label class="segopt"><input type="radio" name="trans" value="jcut" /><span>J-Cut</span></label>
+                  <label class="segopt"><input type="radio" name="trans" value="lcut" /><span>L-Cut</span></label>
+                  <label class="segopt"><input type="radio" name="trans" value="overlap" /><span>Overlap</span></label>
+                  <label class="segopt"><input type="radio" name="trans" value="constant" /><span>C. Power</span></label>
+                </div>
+                <!-- Hovering an option previews it; the diagram otherwise shows the selection.
+                     Two mini tracks: V on top, A below. The warm block is the NEXT clip. -->
+                <div class="trans-viz" id="transViz">
+                  <svg data-viz="none" viewBox="0 0 132 46" aria-hidden="true">
+                    <text x="1" y="14" class="tvz-lbl">V</text><text x="1" y="38" class="tvz-lbl">A</text>
+                    <rect x="12" y="5" width="58" height="14" rx="2" class="tvz-a"/><rect x="70" y="5" width="58" height="14" rx="2" class="tvz-b"/>
+                    <rect x="12" y="27" width="58" height="14" rx="2" class="tvz-a"/><rect x="70" y="27" width="58" height="14" rx="2" class="tvz-b"/>
+                    <line x1="70" y1="2" x2="70" y2="44" class="tvz-cut"/>
+                  </svg>
+                  <svg data-viz="jcut" viewBox="0 0 132 46" aria-hidden="true">
+                    <text x="1" y="14" class="tvz-lbl">V</text><text x="1" y="38" class="tvz-lbl">A</text>
+                    <rect x="12" y="5" width="58" height="14" rx="2" class="tvz-a"/><rect x="70" y="5" width="58" height="14" rx="2" class="tvz-b"/>
+                    <rect x="12" y="27" width="44" height="14" rx="2" class="tvz-a"/><rect x="56" y="27" width="72" height="14" rx="2" class="tvz-b"/>
+                    <rect x="56" y="27" width="14" height="14" rx="2" class="tvz-hl"/>
+                    <line x1="70" y1="2" x2="70" y2="44" class="tvz-cut"/>
+                  </svg>
+                  <svg data-viz="lcut" viewBox="0 0 132 46" aria-hidden="true">
+                    <text x="1" y="14" class="tvz-lbl">V</text><text x="1" y="38" class="tvz-lbl">A</text>
+                    <rect x="12" y="5" width="58" height="14" rx="2" class="tvz-a"/><rect x="70" y="5" width="58" height="14" rx="2" class="tvz-b"/>
+                    <rect x="12" y="27" width="72" height="14" rx="2" class="tvz-a"/><rect x="84" y="27" width="44" height="14" rx="2" class="tvz-b"/>
+                    <rect x="70" y="27" width="14" height="14" rx="2" class="tvz-hl"/>
+                    <line x1="70" y1="2" x2="70" y2="44" class="tvz-cut"/>
+                  </svg>
+                  <svg data-viz="overlap" viewBox="0 0 132 46" aria-hidden="true">
+                    <text x="1" y="14" class="tvz-lbl">V</text><text x="1" y="38" class="tvz-lbl">A</text>
+                    <rect x="12" y="5" width="58" height="14" rx="2" class="tvz-a"/><rect x="70" y="5" width="58" height="14" rx="2" class="tvz-b"/>
+                    <rect x="12" y="27" width="66" height="14" rx="2" class="tvz-a" opacity="0.75"/><rect x="62" y="27" width="66" height="14" rx="2" class="tvz-b" opacity="0.75"/>
+                    <rect x="62" y="27" width="16" height="14" rx="2" class="tvz-hl"/>
+                    <line x1="70" y1="2" x2="70" y2="44" class="tvz-cut"/>
+                  </svg>
+                  <svg data-viz="constant" viewBox="0 0 132 46" aria-hidden="true">
+                    <text x="1" y="14" class="tvz-lbl">V</text><text x="1" y="38" class="tvz-lbl">A</text>
+                    <rect x="12" y="5" width="58" height="14" rx="2" class="tvz-a"/><rect x="70" y="5" width="58" height="14" rx="2" class="tvz-b"/>
+                    <rect x="12" y="27" width="66" height="14" rx="2" class="tvz-a" opacity="0.75"/><rect x="62" y="27" width="66" height="14" rx="2" class="tvz-b" opacity="0.75"/>
+                    <path d="M62 29 C68 29 72 39 78 39" class="tvz-curve"/>
+                    <path d="M62 39 C68 39 72 29 78 29" class="tvz-curve"/>
+                    <line x1="70" y1="2" x2="70" y2="44" class="tvz-cut"/>
+                  </svg>
+                  <div class="tv-text">
+                    <div class="tv-cap" id="transCaption">Hard cut. Clean and instant.</div>
+                    <div class="tv-note">Style is saved with the cut; v1 always cuts clean.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="sil-foot">
+            <div id="silSummary" class="summary"></div>
+            <button id="silUndoBtn" class="undo-btn" style="display:none" data-tip="Restores the timeline to how it was before the last apply.">
+              <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6.7 3L3 13"/></svg>
+              <span class="lbl">Undo last apply</span>
+            </button>
+            <button id="cutBtn" class="cut-btn primary" disabled data-tip="Applies the plan above to the live Premiere timeline, using the silence mode chosen above. Undo can restore the timeline afterward.">
+              <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88M14.47 14.48 20 20M8.12 8.12 12 12"/></svg>
+              <span class="lbl">Remove Silences</span>
+            </button>
+            <button id="silStopBtn2" class="cut-btn danger" style="display:none">
+              <svg class="ic" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+              Stop
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== RETAKES ===================== -->
+      <section id="tab-retake" class="tabpane hidden">
+        <div class="toolbar">
+          <button id="loadBtn" class="primary" disabled data-tip="Transcribes the timeline and splits it into segments you can keep or cut. Transcripts are cached per source file, so reloads are free.">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg>
+            <span class="lbl">Load segments</span>
+          </button>
+          <button id="aiBtn" disabled data-tip="Claude reads the transcript and marks duplicate takes, false starts and filler as Cut. Nothing is deleted until you press Apply All.">
+            <svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5z"/><path d="M19 14l.6 1.9L21.5 16.5l-1.9.6L19 19l-.6-1.9L16.5 16.5l1.9-.6z"/></svg>
+            <span class="lbl">Analyze w/ Claude</span>
+          </button>
+          <button id="retakeStopBtn" class="danger" style="display:none">
+            <svg class="ic" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+            Stop
+          </button>
+        </div>
+        <div class="statusrow">
+          <div id="statusbar" class="statusbar"></div>
+          <label class="chk follow" data-tip="Highlights and scrolls to the segment under Premiere's playhead as you scrub. Click a segment's time to jump the playhead there.">
+            <input type="checkbox" id="followToggle" class="switch" role="switch" checked /> Follow playhead
+          </label>
+        </div>
+
+        <div id="segments" class="segments">
+          <div class="empty-state">
+            <div class="es-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88M14.47 14.48 20 20M8.12 8.12 12 12"/></svg></div>
+            <div class="es-title">No segments loaded</div>
+            <div class="es-sub">Open a sequence in Premiere, then <b>Load segments</b> to transcribe the timeline.</div>
+          </div>
+        </div>
+
+        <div class="footer">
+          <label class="chk" data-tip="Closes the gaps that removed segments leave behind, shifting everything left (a ripple delete). Uncheck to keep the original timing and leave empty gaps instead."><input type="checkbox" id="removeGaps" checked /> Remove gaps when applying (ripple)</label>
+          <label class="chk" data-tip="A segment can hold long stretches of dead air around its words (the row only shows the speech). With this on, Apply All also trims that non-speech air inside every Keep, so the timeline is left with just the spoken parts (about 0.15s of breathing room is kept around words)."><input type="checkbox" id="trimExcess" /> Remove excess (keep speech only)</label>
+          <button id="undoBtn" class="undo-btn" style="display:none" data-tip="Restores the timeline to how it was before the last apply.">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6.7 3L3 13"/></svg>
+            <span class="lbl">Undo last apply</span>
+          </button>
+          <div class="apply-row">
+            <button id="softApplyBtn" disabled data-tip="Nothing is deleted: lays colored markers on the timeline instead. One color per retake group, green over the suggested keeper, red over no-speech. Review by eye, trim by hand, then Clear markers.">
+              <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41 13.42 20.6a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><circle cx="7.5" cy="7.5" r="1.5"/></svg>
+              <span class="lbl">Soft Apply</span>
+            </button>
+            <button id="applyBtn" class="primary" disabled data-tip="Removes every segment marked Cut from the live timeline. With ripple on, the gaps close and the video tightens. Undo can restore the timeline afterward.">
+              <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+              <span class="lbl">Apply All</span>
+            </button>
+          </div>
+          <div class="row2">
+            <button id="startOverBtn" class="ghost" data-tip="Reloads the segments from the timeline and resets the review. Keep/Cut marks made so far are discarded.">
+              <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2v6h6"/><path d="M3.5 8a9 9 0 1 0 2.3-3.3L3 8"/></svg>
+              Start Over
+            </button>
+            <button id="clearMarkersBtn" class="ghost" style="display:none" data-tip="Removes the colored markers that Soft Apply added to the timeline. Markers you created yourself are left untouched.">
+              <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+              Clear markers
+            </button>
+            <button id="exportBtn" class="ghost" disabled data-tip="Saves the kept speech (what is actually on the timeline) as a YouTube-ready .srt subtitle file. With the ripple checkbox on, caption times match the tightened video.">
+              <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>
+              <span class="lbl">Export transcript</span>
+            </button>
+          </div>
+          <div id="summary" class="summary"></div>
+        </div>
+      </section>
+    </div>
+    <div id="usageModal" class="modal-backdrop" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-label="AI usage log">
+        <div class="modal-head">
+          <span class="modal-title">AI usage</span>
+          <button id="usageCloseBtn" class="modal-close" aria-label="Close">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <table class="usage-table">
+            <thead>
+              <tr><th>When</th><th>Action</th><th>Model</th><th>Details</th><th class="num">Cost</th></tr>
+            </thead>
+            <tbody id="usageRows"></tbody>
+          </table>
+          <div id="usageEmpty" class="usage-empty" hidden>No AI usage yet. Loading segments (transcription) and the Claude analysis buttons are recorded here.</div>
+        </div>
+        <div class="modal-foot">
+          <span id="usageTotals" class="usage-totals"></span>
+          <span class="pop-hint">Claude runs are included in your subscription. Transcription is estimated at the ElevenLabs list price.</span>
+        </div>
+      </div>
+    </div>
+    <div id="keyModal" class="modal-backdrop" hidden>
+      <div class="modal modal-sm" role="dialog" aria-modal="true" aria-label="ElevenLabs API key">
+        <div class="modal-head">
+          <span class="modal-title">ElevenLabs API key</span>
+          <button id="keyCloseBtn" class="modal-close" aria-label="Close">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <div class="modal-body key-body">
+          <div id="keyReason" class="key-reason" hidden></div>
+          <div class="pop-hint">Transcribing the timeline (the Retakes tab) uses ElevenLabs Scribe. Create a free account at elevenlabs.io, then copy an API key from Profile &gt; API Keys. The key needs the <b>speech_to_text</b> permission. It is stored only on this computer.</div>
+          <input id="keyInput" class="key-input" type="password" spellcheck="false" autocomplete="off" placeholder="Paste your API key" />
+          <div id="keyError" class="key-error" hidden></div>
+        </div>
+        <div class="modal-foot key-foot">
+          <button id="keySaveBtn" class="primary">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+            <span class="lbl">Save key</span>
+          </button>
+        </div>
+      </div>
+    </div>
+    <div id="toast" class="toast"></div>
+    <script src="./main.js"></script>
+  </body>
+</html>

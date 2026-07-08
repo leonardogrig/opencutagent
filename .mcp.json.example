@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "premiere": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/absolute/path/to/opencutagent/server/index.js"],
+      "timeout": 600000
+    }
+  }
+}

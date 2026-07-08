@@ -1,0 +1,30 @@
+{
+  "name": "opencutagent-premiere-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leonardogrig/editagent.git",
+    "directory": "server"
+  },
+  "description": "MCP server bridging Claude Code to Adobe Premiere Pro (CEP panel) for live timeline editing.",
+  "main": "index.js",
+  "bin": {
+    "editagent-premiere-mcp": "index.js"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "check": "node scripts/check.js",
+    "smoke": "node test/smoke.js",
+    "test": "node test/logic.js && node test/feature.js && node test/silence.js && node test/silenceApply.js && node test/cancelUndo.js && node test/retakeSegments.js && node test/transcribeRanges.js && node test/xmlRebuild.js && node test/xmlRoundtrip.js && node test/smoke.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "ws": "^8.18.0"
+  }
+}

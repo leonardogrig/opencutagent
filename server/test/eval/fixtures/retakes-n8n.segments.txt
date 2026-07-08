@@ -1,0 +1,417 @@
+[0] 0:00  (Throat clearing)
+[1] 2:48  Testing, testing, whatever I say, blah, blah, blah.
+[2] 2:55  NAN now has-
+[3] 2:56  NAN now has a set of skills-
+[4] 2:59  NAN now has a set of skills that helps Claude-
+[5] 3:02  NAN now has a set of skills that helps Claude understand how to use the MCP better to then, inside of your workflow, actually-
+[6] 3:12  (clears throat) NAN now has a set of skills-
+[7] 3:16  NAN now has a set of skills that helps Claude-
+[8] 3:23  NAN now has a set of skills that h- (clears throat) NAN now has a set of skills that helps Claude understand how to better use the MCP to then go inside of your workflow and-
+[9] 3:40  NAN now has a set of skills that-
+[10] 3:44  NAN now has a set of skills that-
+[11] 3:48  NAN now has a set of skills that instructs Claude or Codex on t- (clears throat) NAN now has a set of skills that instructs Claude or Codex on how to use their MCP to-
+[12] 4:03  to now efficiently-
+[13] 4:05  to now efficiently create-
+[14] 4:08  to now efficiently create any-
+[15] 4:11  to now efficiently create workflows-
+[16] 4:14  to now efficiently create workflows.
+[17] 4:16  We'll start this video off onto how you can in-
+[18] 4:24  to now efficiently create workflows-
+[19] 4:27  to now efficiently create-
+[20] 4:37  to now efficiently create workflows-
+[21] 4:40  to now efficiently create- to now efficiently and automatically-
+[22] 4:45  to now efficiently and automatically generate entire workflows-
+[23] 4:50  to now efficiently and automatically in-
+[24] 4:55  to now efficiently and autonomously-
+[25] 4:58  to now efficiently and autonomin-
+[26] 5:00  to now efficiently and autonomously create entire workflows.
+[27] 5:16  Let's immediately start through how-
+[28] 5:24  let's immediately start on-
+[29] 5:28  let's immediately start from how you can install it.
+[30] 5:34  Let's now-
+[31] 5:36  let's immediately-
+[32] 5:39  let's immed-
+[33] 5:43  let's immediately go on to how you-
+[34] 5:48  let's immediately go-
+[35] 5:56  let's immediately learn how-
+[36] 6:00  let's immediately jump on to how y-
+[37] 6:06  Let's immediately jump to how you can install these.
+[38] 6:12  Let's immediately jump into how you can install these skills.
+[39] 6:18  Let's immediately jump to how you can install these skills.
+[40] 6:26  (mouse clicking) First thing you want to do is head over to the repositor-
+[41] 7:02  First thing you want to do is head over...
+[42] 7:05  The first thing you want to do is head over to this repository. The link will be in the description of the video. And here, they instruct exactly what you need to do.
+[43] 7:16  (mouse clicking) The first thing you want to do is head over to this repository, it'll be in the descrip-
+[44] 7:21  The first thing,
+[45] 7:22  the first thing you want to do is head over to this repository, it'll be in the descr-
+[46] 7:27  The first thing you want to do is head over to this repository, the...
+[47] 7:30  The first thing you want to do is head over to this repository, the link for it will be in the description of the video.
+[48] 7:34  Then scroll down into where it instructs us on how you can install this specific plug-in inside of Claude. Let me start off a Claude instance.
+[49] 7:43  And once I have the Claude instance, let me just
+[50] 7:47  paste that command down and hit Enter.
+[51] 7:52  You should th-
+[52] 7:53  You should see...
+[53] 7:57  You should then see a successfully added marketplace NAN.
+[54] 8:02  You should,
+[55] 8:03  you should then see a success message.
+[56] 8:05  You should then see a success mess-
+[57] 8:08  You should then see a sus-
+[58] 8:13  You should then see a success message.
+[59] 8:17  You should then see a success message.
+[60] 8:21  You should then see a succe-
+[61] 8:27  You should then see a success message. After y-
+[62] 8:30  You should then see a success message. After that, grab the next command, paste it in there, hit Enter, and now you'll have to select if you want this to be installed...
+[63] 8:44  as a user scope, project scope,
+[64] 8:47  as a user scope, project scope or...
+[65] 8:50  as a user scope, project, local...
+[66] 8:53  as a user scope, project or local. I prefer choosing project...
+[67] 9:01  as a user scope, project scope...
+[68] 9:04  as a user scope, project scope, local scope. I usually like to install skills inside of the specific project just to not...
+[69] 9:15  as a user scope, project, or local scope. I usually go with project scope just because...
+[70] 9:52  Whenever I actually want to use these skills, I ju- Whenever I actually,
+[71] 9:56  whenever I'm actually going to use this skill,
+[72] 9:58  whenever I,
+[73] 10:00  whenever I'm actually going to use this skill,
+[74] 10:02  whenever I'm actually going to use this skill, it's going,
+[75] 10:05  whenever I'm actually going to use this skill, I'll just go inside of this project
+[76] 10:11  and avoid polluting the co-
+[77] 10:13  and avo-
+[78] 10:14  and avoid potentially polluting the Claude's context window.
+[79] 10:20  And avoid potentially polluting cl-
+[80] 10:22  And avoid potentially polluting,
+[81] 10:25  and avoid potentially,
+[82] 10:26  and avoid potentially polluting Claude's context window, even if it's just with a description of that specific skill.
+[83] 10:35  And avoid potentially, and avoid potentially polluting Claude's context window even if it's just with...
+[84] 10:44  And avoid potentially polluting Claude's context window even if it's just with the-
+[85] 10:49  And avoid potentially polluting Claude's context window even if it's just with the skill's metadata.
+[86] 11:17  The next step will be inside of your...
+[87] 11:21  The next step will be inside of your NAN instance.
+[88] 11:24  The next step will be inside of your NAN instance. Go over to Settings, select Instance-level MCP, and by the way...
+[89] 11:51  My NAN version is 2.2.
+[90] 11:54  This is my NAN version. This is my NAN version. Make sure that you're in...
+[91] 12:00  This is my NAN version. Make sure that yours is updated as well as most of the MCP's tools
+[92] 12:07  will require a more recent version.
+[93] 12:19  Now all you have to do is either... Now all you have to do is click on Enable MCP Access. After you do, you'll get an OAuth as well as an access token. Copy this OAuth.
+[94] 12:39  And replace it, and replace it where it says,
+[95] 12:42  and replace it here where it says URL.
+[96] 12:45  And replace it here where it says URL.
+[97] 12:52  By the way, this command will also be in the description of the video.
+[98] 12:56  By the way, this com-
+[99] 12:57  By the way, this command will also be in the description of the video. Head over to Access Token, grab your access token right here.
+[100] 13:14  Click,
+[101] 13:15  click here to copy your access token. Head back
+[102] 13:18  and
+[103] 13:20  click here to copy your access token and replace it inside of that same command (clears throat). Now there's two ways to do this, you can either execute this command or you can just create a.mcp.json,
+[104] 14:09  get the,
+[105] 14:11  get the json configuration,
+[106] 14:14  get this,
+[107] 14:15  get the j-
+[108] 14:16  get the json,
+[109] 14:21  get the json from your panel and just replace it.
+[110] 14:30  Get everything already done,
+[111] 14:33  get the json configuration,
+[112] 14:35  get the json configuration down here and replace it.
+[113] 14:43  Get the json configuration down here and just paste it inside of the mcp.json.
+[114] 15:08  So just a quick explanation of what we did here. First we added...
+[115] 15:12  So just a quick explanation of what we did here, this MCP is what guarantees our connection between Cloud Code and our
+[116] 15:22  NAN,
+[117] 15:23  NAN sessions.
+[118] 15:25  NAN sessions, and I say sessions and not workflows because this allows us to create many different workflows.
+[119] 15:38  And I'm saying s- And I'm saying sessions and not workflows because this actually allows us to create dif- And I'm saying sessions an- And I'm intentionally saying sessions and not workflows because you don't actua- And I'm intentionally saying session and not,
+[120] 15:53  and I'm intentionally saying session and not workflow because you can actually create different workflows.
+[121] 15:59  And I'm, and I'm intentionally saying session and not workflows because this doesn't give access to just one specific workflow, but the entire...
+[122] 16:23  NAN platform you have hosted.
+[123] 16:26  NAN platform you have hosted.
+[124] 16:28  NAN,
+[125] 16:29  NAN platform you have hosted.
+[126] 16:31  NAN platform you...
+[127] 16:34  NAN,
+[128] 16:35  NAN platform you have hosted.
+[129] 16:37  NAN platform you have hosted.
+[130] 16:40  NAN platform you have hosted.
+[131] 16:43  NAA,
+[132] 16:44  NAN platform you have hosted allowing you to create different workflows, update others and even delete or...
+[133] 17:08  Allowing you to,
+[134] 17:09  allowing you to create, allowing you to, allowing you to create, delete and modify different workflows.
+[135] 17:21  Allowing you to create, allowing you to create, modify and,
+[136] 17:25  allowing you to create, modify, delete different workflows.
+[137] 17:35  And
+[138] 17:48  what we did th-
+[139] 17:49  And what we first did was...
+[140] 17:58  And what we did just now...
+[141] 18:03  (coughs) And what we did down here,
+[142] 18:14  and what we did down here was, and what we did down here was actually,
+[143] 18:18  and what we did down here was actually-
+[144] 18:20  And what we did down here is actually install the pl-
+[145] 18:24  And what we did down here is actually install the plug-ins...
+[146] 18:29  And what we did down here is actually install...
+[147] 18:32  And what we did down here is actually install the plug-ins inside of Claude Code,
+[148] 18:36  so that from these guidelines, Claude understands how to use the MCP tools more efficiently.
+[149] 18:50  All right. With this done,
+[150] 18:51  all right, with this done, the first thing...
+[151] 18:53  All right. With this done, the first thing I'll...
+[152] 18:55  All right. With this done, the first thing I'd l-...
+[153] 18:57  All right. The first...
+[154] 18:59  All right. With this done, since I've just installed the...
+[155] 19:01  All right. With this done, since I've just added an MCP, I'll want to command...
+[156] 19:08  Control+C to close my Claude instance and then open a new instance, so that
+[157] 19:13  it identifies that new MCP server,
+[158] 19:16  it identifies that new MCP server and allows me to choose if I want to actually use it. So, let me select the first option and now it should identify that MCP and successfully use the skills
+[159] 19:32  to accomplish any task that I give it.
+[160] 20:06  So this is my prompt, create a new workflow, it should be a web hook trigger that receives a prompt.
+[161] 20:11  It then goes through an AI agent that is able to use OpenRouter,
+[162] 20:15  Gemini 2.5 flash, to answer the user's question.
+[163] 20:19  They then get a response back from the web hook. So really simple, not such a well-thought prompt, but it should be suf-
+[164] 20:26  but it shou- but it sh-
+[165] 20:28  but it should be sufficient,
+[166] 20:30  but it should be sufficient for the agent to understand,
+[167] 20:33  but it sh- but it already,
+[168] 20:35  but it should already be sh-
+[169] 20:36  but it sh- but it should already be ef-
+[170] 20:40  but it should bef,
+[171] 20:42  but it should be enough for Claude to understand what we need and use the tools to build our workflow.
+[172] 21:01  So there it is. So there it is. It first...
+[173] 21:04  So there it is, it's first reading through the skills.
+[174] 21:06  As you can see, I have no workflow down.
+[175] 21:09  So there it is, first it's reading through a bunch of skill.
+[176] 21:12  So there it is, first it's,
+[177] 21:14  it's re- it's fr-
+[178] 21:16  it's first reading through,
+[179] 21:17  it's first reading through the skills and now finally calling the actual MCP.
+[180] 21:22  And as you can see, we have no workflows created yet.
+[181] 21:45  And it's pretty interesting because since it knows...
+[182] 21:48  And the interesting thing is, once it calls the MCP, it understands that maybe there's some tools from the MCP that it doesn't quite understand yet and then it loads additional skills to have the full context of how to effectively use those tools.
+[183] 22:16  Now, some of the more core NAN users might think that...
+[184] 22:19  Now some of the more core users from...
+[185] 22:22  Now some of you...
+[186] 22:23  Now some of the more core NAN users that...
+[187] 22:26  Now some of the more core NAN users might have noticed that we already kind of have this...
+[188] 22:31  Now some of the more core users from NAN...
+[189] 22:34  Now some of the more core NAN users might think this is kind of redundant since we could already talk...
+[190] 22:41  Now some of the more core NAN users might have noticed that...
+[191] 22:45  Now some of the more core NAN...
+[192] 22:47  Now some of the more core NAN users might have noticed that this is available...
+[193] 22:52  Now some of the more core NAN users might have noticed that we have had the NAN MCP for a while, so this has been a possibility.
+[194] 23:07  But soon enough, I'll show you how this works and why using skills in addition with the MCP just makes it much more efficient.
+[195] 23:19  So I forgot to cross these off, but we're through how to install it and now we're actually trying...
+[196] 23:26  By the way, I forgot to cross these off, but we're done with how to install it and we're currently in the how to use it.
+[197] 23:39  And we're currently just checking how you can...
+[198] 23:42  And we're currently just checking how you can... And we're currently just...
+[199] 23:46  And we're currently just...
+[200] 23:48  And we're currently...
+[201] 23:51  And we're currently in the step on how you can actually use it.
+[202] 23:55  And we're currently in the step on how you can actually use it, which is just...
+[203] 23:59  And we're currently on the step on how you can actually use it, which is just typing in plain English
+[204] 24:04  and
+[205] 24:07  waiting for your workflow to be built.
+[206] 24:10  Waiting for your, waiting,
+[207] 24:11  waiting for your workflow to be completely built by Claude.
+[208] 24:17  Waiting for your workflow to be completely built by an agent. Okay. By the way.
+[209] 24:22  Done, workflow created and connections verified. It seems like there is nothing here, but if I refresh the page,
+[210] 24:28  it should show up with
+[211] 24:30  th- the actual workflow that was just created,
+[212] 24:33  and there it is.
+[213] 24:42  (mouse clicking) Now, you'll probably have to organize this since...
+[214] 25:09  Now, you'll probably have to organize this since it...
+[215] 25:12  Now, it seems like the notes...
+[216] 25:14  Now, you'll probably have to organize this as the notes keep over.
+[217] 25:19  Now, you'll probably have to organize this since the notes are overlapping.
+[218] 25:35  Now, you'll probably have to organize this since the notes are overlapping.
+[219] 25:42  Now, you'll pro-
+[220] 25:43  Now, you'll probably have to organize this since the notes are overlapping.
+[221] 25:59  But ultimately, the...
+[222] 26:01  But ultimately, here's the idea. And because I built it with a web hook, I can have Claude actually trigger
+[223] 26:08  that.
+[224] 26:12  But this is the idea. And because I built it with a web hook, I can actually have Claude trigger that web hook, send...
+[225] 26:21  But this is ess-
+[226] 26:22  But this is essen-
+[227] 26:23  But essentially this is the idea. And because I built it with a web hook, Claude can actually send a curl to that web hook and see what it responds back.
+[228] 26:34  Not only that, but it could also see the execution.
+[229] 26:38  Not only that, but it can actually see the execution for that.
+[230] 26:41  Not only that, but it can act-
+[231] 26:43  Not only that, but it can...
+[232] 26:44  Not only that, but it can even...
+[233] 26:46  Not only that, but it can even...
+[234] 26:49  Not only that, but it can even trigger...
+[235] 26:51  Not only that, but it can also call...
+[236] 26:54  Not only that, but it can also understand all of the...
+[237] 26:57  Not only that, but it can fetch the executions and understand how...
+[238] 27:02  Not only that, but it can actually fetch for executions and understand...
+[239] 27:07  Not only that, but it can actually fetch for execution and really understand how the workflow played off.
+[240] 27:17  (mouse clicking)
+[241] 27:57  I just created a key inside of OpenRouter and we can't actually...
+[242] 28:01  I just created a key in OpenRouter to s... I just created a key in op...
+[243] 28:05  I just created a key inside of OpenRouter, and now after we add the credential,
+[244] 28:10  then
+[245] 28:12  we might be able to add the model. Actually, it's already selected, so Gemini 2.5 Flashed. Don't exactly know how that happened.
+[246] 28:25  But that's it. That's the only authoriz- But that's it. That's the only...
+[247] 28:33  But that... But... But I guess that's it. That's the only credential that was needed. Now, let's have Claude...
+[248] 28:40  But...
+[249] 28:41  But I guess that's it. That's the only...
+[250] 28:43  But that's it. That's the only cre... But that's it. That's the only credential we needed, so let's now have Claude test that workflow to see how it's working.
+[251] 28:54  And that's it. That's our... And that's basically it.
+[252] 28:59  I guess that's it for the workflow. There's...
+[253] 29:03  That was the only credential needed, so now we can have Claude test...
+[254] 29:08  That was the only credential needed, so that...
+[255] 29:11  That was the only credential...
+[256] 29:12  That was the only credential required, so now let's have Claude test the workflow.
+[257] 29:34  My prompt is as simple as, "Test the workflow by sending a curl
+[258] 29:37  and verifying if the response comes back successfully."
+[259] 29:45  (mouse clicking)
+[260] 30:42  It actually detected some steps I forgot.
+[261] 30:45  Well, this i- this is interesting. It actually detected some steps I forgot, for example, to actually publish the workflow so that it could test the curl,
+[262] 30:52  but it had all the tools to execute that,
+[263] 30:56  did so, and now is executing the curl.
+[264] 31:10  So there it is. Apparently, it asked for the capital of France. The answer...
+[265] 31:21  was retrieved-
+[266] 31:22  was retrieved, tested-
+[267] 31:25  was retrieved-
+[268] 31:28  was retrieved, tested, and validated successfully from Cloud code.
+[269] 31:35  (clears throat) Now, honestly, this is a really simple workflow.
+[270] 31:51  Now, honestly, this is just-
+[271] 31:53  now, honestly, obvious- now, obviously, this is a really simple example.
+[272] 31:57  Now, honestly, this is a really simple example, but
+[273] 31:59  I-
+[274] 32:00  now, honestly, this is a really simple example, but-
+[275] 32:04  now, honestly, this is a simple-
+[276] 32:05  now, honestly, this is a really simple example,
+[277] 32:08  but a while ago I did create an extension, hoping that it could be an agent that creates-
+[278] 32:14  now, this is a really simple example, but a while ago I did post a video here where I created an extension...
+[279] 32:20  now, this is a really simple example, but-
+[280] 32:24  now, obviously, this is a really simple example, but I did post a video back then where I created an extension that cre-
+[281] 32:32  now, obviously, this is a really simple example, but a while ago I posted a video where I did create an extension for Chrome.
+[282] 32:39  Now, obviously, this is a really simple example, but a while ago I did post an ex-
+[283] 32:44  now, obviously, this is a really simple example, but a while ago I did post
+[284] 32:48  a video-
+[285] 32:49  now, obviously, this is a really simple example, but a while ago I did post a video
+[286] 32:53  that-
+[287] 32:55  now, obviously, this is a really simple-
+[288] 32:57  now, obviously, this is a really simple example, but a while ago I did post an extension-
+[289] 33:02  now, obviously, this is a really simple example-
+[290] 33:05  now, obviously, this is a really simple example, but a while ago I did post a video where I created a Chrome extension that served as an agent to create these workflows.
+[291] 33:16  (clears throat) But because essentially I was grabbing- but because essentially I was grabbing the actual JSON from each node, so for example, if you don't know this, test.JSON, each one of these nodes represents a JSON.
+[292] 34:08  Essentially represents a-
+[293] 34:13  essentially represents a-
+[294] 34:15  essentially represents a group of-
+[295] 34:18  essentially represents-
+[296] 34:36  are essentially
+[297] 34:38  re- are essentially-
+[298] 34:39  are essentially parameters and specifications-
+[299] 34:42  are essentially a JSON-
+[300] 34:44  are essentially a J-
+[301] 34:46  are essentially JSON of-
+[302] 34:49  are essentially a JSON-
+[303] 34:51  are essentially a JSON with-
+[304] 34:54  are essentially a JSON with sp-
+[305] 34:56  are essentially a JSON with specifications and-
+[306] 35:00  are essentially JSON-
+[307] 35:02  are essentially a JSON with specifications-
+[308] 35:05  are essentially a JSON with-
+[309] 35:07  are essentially a JSON with sp-
+[310] 35:09  are essentially a JSON with specifications, and if you just go with-
+[311] 35:14  are essentially JSON-
+[312] 35:16  are essentially a JSON with specifications,
+[313] 35:18  and because of-
+[314] 35:21  are essentially JSON with specifications, and because of this specific structure, I need to tell the LLM-
+[315] 35:27  are essentially a JSON with specifications, and if you go towards this route of giving-
+[316] 35:34  are essentially a JSON with specifications, and if you go this-
+[317] 35:37  are essentially a JSON with specifi- are essentially a JSON with specifications, but if you go this route,
+[318] 35:44  you'll likely reach- you'll likely fetch-
+[319] 36:09  you'll likely reach the f-
+[320] 36:11  you'll-
+[321] 36:12  you'll likely reach the maximum context window pretty fast,
+[322] 36:23  and spend a lot of money in the process- and spend a l- and spend a lot of money in the process- and spend a lot of money-
+[323] 36:32  and spend a lot of tokens because of th-
+[324] 36:34  and-
+[325] 36:35  and consequentially-
+[326] 36:40  Additionally, just spending a lot of tokens along the process.
+[327] 36:50  (clicking) But now that we've gone through the process,
+[328] 36:55  but not, but now that we've gone through how you can use it, let's understand how it works.
+[329] 37:02  But now that, and now that we've gone through how you can use it, let's understand how it works because I feel like this...
+[330] 37:11  And now that we've gone through the process of how to use it, let's understand how it works because...
+[331] 37:22  Once you understand it, you might,
+[332] 37:25  once you understand it,
+[333] 37:26  once you understand it, you'll,
+[334] 37:29  once you understand it, you'll likely,
+[335] 37:31  once you understand it, you'll likely be able to,
+[336] 37:36  once you understand it, you'll get the sense of how this,
+[337] 37:39  once you understand it, you'll get the sense of how this can improve along time.
+[338] 37:44  Once you understand it, you'll under-
+[339] 37:47  once you understand it, you'll get how through iter-
+[340] 37:51  once you understand it, you'll under-
+[341] 37:53  once you understand it, you'll get how the iterations throughout using this MCP and these skills will just make it better and better.
+[342] 38:05  Throughout the upcoming months,
+[343] 38:08  until eventually creating an entire automations will actually be...
+[344] 38:17  The easiest thing ever.
+[345] 38:20  The easiest thing ever. (whispering) (clicking) And the explanation is, and the explana- and the explanation is actually really simple. You have a cloud instance that reaches for an MCP tool to then perform actions throughout these tools.
+[346] 39:39  And the explanation is actually really simple.
+[347] 39:42  And the explanation is actually pretty simple. You have a cloud code instance that understands it has an NAN MCP to perform actions inside of a given workflow.
+[348] 39:55  Now, the problem with having only the, now the problem with only having the MCPs,
+[349] 40:00  now the (clears throat). (car passing)
+[350] 41:30  (traffic rumbling)
+[351] 41:52  Is that it's equivalent to me trying to,
+[352] 41:55  is that it's,
+[353] 41:56  is that it's equivalent to me trying to,
+[354] 42:00  is that it's equivalent to me trying to make my printer,
+[355] 42:05  is that it's equivalent to me trying to make the printer work,
+[356] 42:09  is that it's equivalent to me trying to make the printer work,
+[357] 42:13  is that it's equivalent to me trying to make the printer work without using a manual,
+[358] 42:19  is that it's like me trying to make a printer work,
+[359] 42:22  is that it's like me trying to make my printer work without using the manual,
+[360] 42:31  is that it's like me trying to use my print,
+[361] 42:35  is that it's like me trying to use my printer for the first time without using a manual.
+[362] 42:44  I mean who uses a manual?
+[363] 42:49  I mean who uses a manual?
+[364] 42:51  I mean who uses a manual?
+[365] 42:54  I mean who actually uses a manual?
+[366] 42:57  I mean who actually uses a manual? I-
+[367] 43:00  I mean who actually uses a manual? But if I did...
+[368] 43:03  I mean I could...
+[369] 43:04  I mean
+[370] 43:05  I was able to make it work without using the manual, but it obviously took me way much longer than if I didn't. The thing is that...
+[371] 43:23  And that's something you do-
+[372] 43:27  And usually taking longer,
+[373] 43:29  and usually taking longer for agents means that it's processing a lot of tokens and iterating through this process of trying to...
+[374] 43:44  Use the MCP tool inside of NAN, getting a bad response, understanding that was a bad response, maybe even fetching,
+[375] 43:51  maybe even browsing the internet to understand what went wrong, then using the MCP again,
+[376] 43:56  going back to NAN, discovering that there is still an issue going back
+[377] 44:01  to the session, and just this in-
+[378] 44:04  and just, just, and just this loop, and just this loop t-
+[379] 44:08  and just this loop is costing you money,
+[380] 44:10  and just this loop is costing you more money and taking longer for you to achieve your desire.
+[381] 44:19  Costing you more money, costing you more money, costing you money, time,
+[382] 44:23  costing you money and,
+[383] 44:25  costing you money and time.
+[384] 44:30  (sigh)
+[385] 45:02  So he- so here is where,
+[386] 45:05  so here's where skills comes in.
+[387] 45:07  Before actually using a tool, as you s-
+[388] 45:13  So here's where skills comes in. Before actually using the tool, as you've seen before in our test,
+[389] 45:22  it'll actually read,
+[390] 45:24  it'll actually read the manual to proceed onto using,
+[391] 45:29  it'll actually r-
+[392] 45:32  it'll actually read the manual to only then use that specific tool. If it tries to use a tool, as we've seen previously,
+[393] 45:43  i-
+[394] 45:44  if it sees a tool that it needs t-
+[395] 45:46  if it identifies a tool,
+[396] 45:48  if it identifies th-
+[397] 45:50  if it identifies there's a tool that,
+[398] 45:52  if it identifies from the MCP a tool it'll likely have to use,
+[399] 45:56  it'll immediately read through the skill before trying to use that specific tool.
+[400] 46:04  Making it much more efficient before actually,
+[401] 46:08  making it much more efficient before actually,
+[402] 46:12  b- making it much,
+[403] 46:13  making it much more efficient before actually processing,
+[404] 46:18  making it much more efficient before actually processing that request.
+[405] 46:41  All right. That's it for today. All right. That's it for today. Thanks for watching. All right. That's it for today. Thanks for watching.
+[406] 46:46  All right. That's it for today.
+[407] 46:48  All right. That's it for today.
+[408] 46:50  All right. That's it for today. Thanks for watching. Make sure to subscribe for more. All right. That's for,
+[409] 46:55  all right. That's it for today. Thanks for watching. Make sure to leave a like and subscribe for more. All right. That's it for today. Thanks for watch-
+[410] 47:01  All right. That's it for today. Thank-
+[411] 47:04  All right. That's it for today. Thanks for watching.
+[412] 47:07  Al-
+[413] 47:07  All right. I guess that's it for today. Thanks for watching. Leave a like and subscribe for more.
+[414] 47:13  All right. I guess that is it.
+[415] 47:15  All right. I guess that's it. Leave a like, subscribe for more and...
+[416] 47:19  All right. I guess that's it. Leave a like, subscribe for more. Thanks for watching and I'll see you in the next video. Til then.

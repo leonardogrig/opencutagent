@@ -1,0 +1,16 @@
+node_modules/
+.cache/
+.env
+*.log
+
+# machine-specific (copy the .example files and edit the paths/keys)
+.mcp.json
+.claude/settings.local.json
+server/.claude/
+
+# retake eval: saved headless AI runs (regenerated each run; not source)
+server/test/eval/out/
+
+# macOS / Windows
+.DS_Store
+Thumbs.db
