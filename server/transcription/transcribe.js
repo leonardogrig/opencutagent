@@ -55,7 +55,100 @@ function extractAudioRange(mediaPath, startSec, endSec, destWav) {
   ]);
 }
 
+// Extract MANY [start,end] windows in ONE ffmpeg pass, concatenated with a short
+// silence spacer between them (apad), as mono 16kHz PCM. One decode of the source,
+// one output file — instead of one ffmpeg spawn per island. The filter graph is
+// passed via -filter_complex_script (a temp file) so hundreds of islands can't
+// blow past ARG_MAX.
+function extractConcatAudio(mediaPath, islands, spacerSec, destWav) {
+  const segs = islands.map((isl, i) => {
+    const pad = i < islands.length - 1 && spacerSec > 0 ? `,apad=pad_dur=${spacerSec}` : "";
+    return `[0:a]atrim=start=${isl.start}:end=${isl.end},asetpts=PTS-STARTPTS${pad}[s${i}]`;
+  });
+  const filter =
+    segs.join(";") + ";" +
+    islands.map((_, i) => `[s${i}]`).join("") +
+    `concat=n=${islands.length}:v=0:a=1[out]`;
+  const scriptPath = `${destWav}.filter`;
+  writeFileSync(scriptPath, filter);
+  const done = run(FFMPEG_BIN, [
+    "-y", "-i", mediaPath,
+    "-filter_complex_script", scriptPath,
+    "-map", "[out]",
+    "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
+    destWav,
+  ]);
+  return done.finally(() => { try { rmSync(scriptPath, { force: true }); } catch { /* ignore */ } });
+}
+
 const r3 = (x) => Math.round(x * 1000) / 1000;
+
+/* ---------- concat batching (pure, unit-tested in server/test/transcribeRanges.js) ----------
+ * Instead of one Scribe upload per island (N HTTP round-trips on a chopped-up timeline),
+ * islands are packed into a few duration-capped batches; each batch is concatenated into
+ * ONE wav (with silence spacers so Scribe never glues words across a joint) and sent as
+ * ONE Scribe call, then word times are remapped from concat time back to source time. */
+
+// Greedy in-order packing: consecutive islands go into one batch until adding the next
+// would exceed maxSec of audio. An island longer than maxSec becomes its own batch
+// (never split — the union cache and word offsets stay island-aligned).
+export function planConcatBatches(islands, maxSec = 1800) {
+  const batches = [];
+  let cur = [];
+  let curDur = 0;
+  for (const isl of islands || []) {
+    const d = isl.end - isl.start;
+    if (cur.length && curDur + d > maxSec) { batches.push(cur); cur = []; curDur = 0; }
+    cur.push(isl);
+    curDur += d;
+  }
+  if (cur.length) batches.push(cur);
+  return batches;
+}
+
+// Where each island lands in the concatenated wav: [concatStart, concatEnd] plus its
+// source start, with `spacerSec` of silence between islands (none after the last).
+export function buildConcatLayout(islands, spacerSec = 1.0) {
+  const layout = [];
+  let t = 0;
+  for (const isl of islands || []) {
+    const dur = isl.end - isl.start;
+    layout.push({ concatStart: r3(t), concatEnd: r3(t + dur), sourceStart: isl.start });
+    t += dur + spacerSec;
+  }
+  const totalSec = layout.length ? r3(t - spacerSec) : 0;
+  return { layout, totalSec };
+}
+
+// Map Scribe word times on the concatenated wav back to SOURCE seconds. Each word is
+// assigned to the island it overlaps MOST (both lists are time-sorted, so a single
+// advancing cursor keeps this O(words + islands)) — so a word overhanging an island
+// edge is clamped into that island, while anything Scribe emits entirely inside a
+// silence spacer (a hallucination) is dropped.
+export function remapConcatWords(words, layout, eps = 0.05) {
+  const sorted = [...(words || [])]
+    .filter((w) => w && typeof w.start === "number")
+    .sort((a, b) => a.start - b.start);
+  const out = [];
+  let i = 0;
+  const overlap = (w, l) =>
+    l ? Math.min(typeof w.end === "number" ? w.end : w.start + 0.01, l.concatEnd) - Math.max(w.start, l.concatStart) : -Infinity;
+  for (const w of sorted) {
+    while (i < layout.length - 1 && w.start >= layout[i + 1].concatStart - eps) i++;
+    // candidate islands: the cursor's and the next (a word can straddle a spacer edge)
+    const span = overlap(w, layout[i + 1]) > overlap(w, layout[i]) ? layout[i + 1] : layout[i];
+    if (!span || overlap(w, span) < -eps) continue; // entirely inside a spacer — hallucinated
+    const off = span.sourceStart - span.concatStart;
+    const srcEnd = span.sourceStart + (span.concatEnd - span.concatStart);
+    const o = { ...w, start: r3(Math.max(span.sourceStart, w.start + off)) };
+    if (typeof w.end === "number") {
+      o.end = r3(Math.min(srcEnd, w.end + off));
+      if (o.end <= o.start) o.end = r3(o.start + 0.01);
+    }
+    out.push(o);
+  }
+  return out;
+}
 
 /* ---------- pure interval math (unit-tested in server/test/transcribeRanges.js) ----------
  * We transcribe ONLY the source audio that's actually on the timeline. The used clip
@@ -203,7 +296,7 @@ export async function transcribeSourceRanges(mediaPath, ranges, opts = {}) {
     throw new TranscribeError(`Source media not found on disk: ${mediaPath}`);
   }
 
-  const mergeGapSec = Number(liveEnv("EDITAGENT_TRANSCRIBE_MERGE_GAP") || 2);
+  const mergeGapSec = Number(liveEnv("EDITAGENT_TRANSCRIBE_MERGE_GAP") || 5);
   const padSec = Number(liveEnv("EDITAGENT_TRANSCRIBE_PAD") || 0.25);
   const needed = mergeIntervals(ranges, { mergeGapSec, padSec });
   if (!needed.length) return { payload: { words: [] }, cached: true, path: null };
@@ -234,31 +327,74 @@ export async function transcribeSourceRanges(mediaPath, ranges, opts = {}) {
     return { payload: { words: cache.words }, cached: true, path: rangedPath };
   }
 
-  // Recombine the gaps to transcribe (as few Scribe calls as possible).
+  // Recombine the gaps to transcribe, then pack the islands into a few duration-capped
+  // batches — each batch is ONE ffmpeg concat + ONE Scribe call, not one call per island.
   const toDo = mergeIntervals(uncovered, { mergeGapSec, padSec: 0 });
+  const spacerSec = 1.0; // silence between islands in a concat wav; keeps Scribe from joining words
+  const batchMaxSec = Number(liveEnv("EDITAGENT_TRANSCRIBE_BATCH_SEC") || 1800);
+  const batches = planConcatBatches(toDo, batchMaxSec);
   let words = cache.words;
   let islands = cache.islands;
-  for (const isl of toDo) {
-    const tmpWav = join(tmpdir(), `editagent-${Date.now()}-${Math.floor(performance.now())}.wav`);
+
+  const recordBilled = (billedSec) =>
+    recordUsage({
+      type: "transcription",
+      model: scribeModel(model),
+      media: basename(mediaPath),
+      seconds: r3(billedSec),
+      costUsd: (billedSec / 3600) * scribeRatePerHourUsd(),
+    });
+  // Persist the union cache after EVERY successful Scribe call: if a later call fails
+  // (quota, network), the work already billed survives and the retry only pays for
+  // what's still uncovered.
+  const commit = (batchIslands, srcWords) => {
+    words = mergeWords(words, srcWords);
+    islands = mergeIntervals([...islands, ...batchIslands], { mergeGapSec: 0, padSec: 0 });
+    writeFileSync(rangedPath, JSON.stringify({ model: scribeModel(model), islands, words }, null, 2));
+  };
+  const scribeOpts = { model, language, numSpeakers };
+  const tmpName = () => join(tmpdir(), `editagent-${Date.now()}-${Math.floor(performance.now())}.wav`);
+
+  // Single-island transcription (also the fallback path if a concat extract fails).
+  const transcribeOne = async (isl) => {
+    const tmpWav = tmpName();
     try {
-      log(`extracting audio [${isl.start.toFixed(1)}-${isl.end.toFixed(1)}s]: ${basename(mediaPath)}`);
-      await extractAudioRange(mediaPath, isl.start, isl.end, tmpWav);
       log(`transcribing via Scribe [${isl.start.toFixed(1)}-${isl.end.toFixed(1)}s]: ${basename(mediaPath)}`);
-      const payload = await callScribe(tmpWav, apiKey, { model, language, numSpeakers });
-      const billedSec = isl.end - isl.start;
-      recordUsage({
-        type: "transcription",
-        model: scribeModel(model),
-        media: basename(mediaPath),
-        seconds: r3(billedSec),
-        costUsd: (billedSec / 3600) * scribeRatePerHourUsd(),
-      });
-      words = mergeWords(words, offsetWords(payload.words || [], isl.start));
-      // Persist the union cache after EVERY island: if a later island fails
-      // (quota, network), the Scribe work already billed here survives and the
-      // retry only pays for what's still uncovered.
-      islands = mergeIntervals([...islands, isl], { mergeGapSec: 0, padSec: 0 });
-      writeFileSync(rangedPath, JSON.stringify({ model: scribeModel(model), islands, words }, null, 2));
+      await extractAudioRange(mediaPath, isl.start, isl.end, tmpWav);
+      const payload = await callScribe(tmpWav, apiKey, scribeOpts);
+      recordBilled(isl.end - isl.start);
+      commit([isl], offsetWords(payload.words || [], isl.start));
+    } finally {
+      try { rmSync(tmpWav, { force: true }); } catch { /* ignore */ }
+    }
+  };
+
+  for (const batch of batches) {
+    if (batch.length === 1) {
+      await transcribeOne(batch[0]);
+      continue;
+    }
+    const { layout, totalSec } = buildConcatLayout(batch, spacerSec);
+    const tmpWav = tmpName();
+    try {
+      log(
+        `extracting ${batch.length} ranges [${batch[0].start.toFixed(1)}-${batch[batch.length - 1].end.toFixed(1)}s, ` +
+        `${totalSec.toFixed(0)}s of audio]: ${basename(mediaPath)}`
+      );
+      try {
+        await extractConcatAudio(mediaPath, batch, spacerSec, tmpWav);
+      } catch (e) {
+        // Concat filter failed (odd media/old ffmpeg) — fall back to per-island extraction
+        // for this batch. Scribe/quota errors below are NOT retried per-island: the audio
+        // isn't the problem there, and retrying would re-bill.
+        log(`concat extract failed (${e.message.slice(0, 200)}); falling back to per-range transcription`);
+        for (const isl of batch) await transcribeOne(isl);
+        continue;
+      }
+      log(`transcribing via Scribe (${batch.length} ranges, one call): ${basename(mediaPath)}`);
+      const payload = await callScribe(tmpWav, apiKey, scribeOpts);
+      recordBilled(totalSec);
+      commit(batch, remapConcatWords(payload.words || [], layout));
     } finally {
       try { rmSync(tmpWav, { force: true }); } catch { /* ignore */ }
     }

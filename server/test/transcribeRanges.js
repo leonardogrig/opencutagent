@@ -1,7 +1,10 @@
 // Unit checks for timeline-scoped transcription's interval math: we transcribe ONLY the
 // source audio on the timeline (merged into islands), and a union cache means a reload
 // after cutting never re-bills already-transcribed audio. Pure logic — no ffmpeg/Scribe.
-import { mergeIntervals, subtractIntervals, mergeWords } from "../transcription/transcribe.js";
+import {
+  mergeIntervals, subtractIntervals, mergeWords,
+  planConcatBatches, buildConcatLayout, remapConcatWords,
+} from "../transcription/transcribe.js";
 
 let failures = 0;
 function check(label, cond, got) {
@@ -85,6 +88,60 @@ const pairs = (iv) => iv.map((r) => [r.start, r.end]);
   const m = mergeWords(a, b);
   check("mergeWords: sorted by start", m.map((w) => w.text).join(",") === "hello,world,again", m.map((w) => w.text));
   check("mergeWords: near-duplicate boundary word deduped", m.filter((w) => w.text === "world").length === 1, m.map((w) => [w.text, w.start]));
+}
+
+// --- planConcatBatches: pack islands into duration-capped Scribe uploads ---
+{
+  const isl = [{ start: 0, end: 10 }, { start: 20, end: 30 }, { start: 40, end: 55 }];
+  const b = planConcatBatches(isl, 25);
+  check("planConcatBatches: splits when a batch would exceed maxSec", b.length === 2 && b[0].length === 2 && b[1].length === 1, b);
+  const one = planConcatBatches(isl, 1800);
+  check("planConcatBatches: everything fits -> one batch", one.length === 1 && one[0].length === 3, one);
+}
+{
+  // an island longer than maxSec still becomes ONE batch (never split)
+  const b = planConcatBatches([{ start: 0, end: 100 }, { start: 200, end: 205 }], 30);
+  check("planConcatBatches: oversized island gets its own batch, not split", b.length === 2 && b[0].length === 1 && approx(b[0][0].end, 100), b);
+  check("planConcatBatches: empty input -> no batches", planConcatBatches([], 30).length === 0, planConcatBatches([], 30));
+}
+
+// --- buildConcatLayout: island positions in the concatenated wav (with spacers) ---
+{
+  const { layout, totalSec } = buildConcatLayout([{ start: 100, end: 110 }, { start: 300, end: 305 }], 1.0);
+  check("buildConcatLayout: first island starts at 0", approx(layout[0].concatStart, 0) && approx(layout[0].concatEnd, 10), layout[0]);
+  check("buildConcatLayout: second island after a 1s spacer", approx(layout[1].concatStart, 11) && approx(layout[1].concatEnd, 16), layout[1]);
+  check("buildConcatLayout: total = islands + inner spacers only", approx(totalSec, 16), totalSec);
+  check("buildConcatLayout: empty -> 0 total", buildConcatLayout([], 1).totalSec === 0, buildConcatLayout([], 1));
+}
+
+// --- remapConcatWords: concat-time words back to SOURCE seconds ---
+{
+  const { layout } = buildConcatLayout([{ start: 100, end: 110 }, { start: 300, end: 305 }], 1.0);
+  const words = [
+    { type: "word", text: "alpha", start: 2.0, end: 2.5 },    // island 1 -> source 102-102.5
+    { type: "word", text: "spacer", start: 10.4, end: 10.7 }, // inside the 10-11 spacer -> dropped
+    { type: "word", text: "beta", start: 12.0, end: 12.5 },   // island 2 -> source 301-301.5
+  ];
+  const m = remapConcatWords(words, layout);
+  check("remapConcatWords: island-1 word offset to source time", m[0].text === "alpha" && approx(m[0].start, 102) && approx(m[0].end, 102.5), m[0]);
+  check("remapConcatWords: spacer hallucination dropped", m.length === 2 && !m.some((w) => w.text === "spacer"), m.map((w) => w.text));
+  check("remapConcatWords: island-2 word offset to source time", m[1].text === "beta" && approx(m[1].start, 301) && approx(m[1].end, 301.5), m[1]);
+}
+{
+  // a word overhanging an island edge is clamped into its island (end > start kept)
+  const { layout } = buildConcatLayout([{ start: 100, end: 110 }], 1.0);
+  const m = remapConcatWords([{ type: "word", text: "edge", start: 9.8, end: 10.6 }], layout);
+  check("remapConcatWords: overhanging word clamped to island end", m.length === 1 && approx(m[0].end, 110) && m[0].end > m[0].start, m);
+  check("remapConcatWords: word without numeric start dropped", remapConcatWords([{ text: "x" }], layout).length === 0, remapConcatWords([{ text: "x" }], layout));
+}
+{
+  // unsorted input still remaps correctly (cursor advance relies on sorting internally)
+  const { layout } = buildConcatLayout([{ start: 0, end: 5 }, { start: 50, end: 55 }], 1.0);
+  const m = remapConcatWords([
+    { type: "word", text: "late", start: 7.0, end: 7.4 },
+    { type: "word", text: "early", start: 1.0, end: 1.4 },
+  ], layout);
+  check("remapConcatWords: handles unsorted words", m.length === 2 && approx(m[0].start, 1) && approx(m[1].start, 51), m);
 }
 
 console.log(failures === 0 ? "\nAll transcribe-range checks passed." : `\n${failures} transcribe-range check(s) FAILED.`);
