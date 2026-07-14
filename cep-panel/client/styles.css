@@ -656,6 +656,113 @@ button.reinsert:hover:not(:disabled) { background: var(--accent-hover); border-c
 .footer .apply-row { display: flex; gap: var(--sp-2); }
 .footer .apply-row button { flex: 1; }
 
+/* ============================ ANIMATION TAB ============================
+   Pick a contiguous run of segments, then chat with the animation agent.
+   Two stacked modes inside one pane: #animSelect (picker) and .anim-chatwrap
+   (chat) — the module swaps .hidden between them. */
+.anim { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.anim-bar { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-3); flex: none; }
+.anim-bar .grow { flex: 1; }
+.anim-style { display: flex; align-items: center; gap: var(--sp-2); color: var(--text-secondary); font-size: var(--fs-sm); }
+.anim-style select { min-width: 110px; }
+.segctl-sm { padding: 2px; }
+.segctl-sm .segopt span { padding: 3px 10px; font-size: var(--fs-sm); }
+
+#animSelect { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#animSelect.hidden { display: none; }
+.anim-hint { padding: var(--sp-2) var(--sp-3); color: var(--text-tertiary); font-size: var(--fs-sm); line-height: 1.5; border-bottom: 1px solid var(--border-subtle); }
+
+/* Existing animations in this project (click to reopen its chat) */
+.anim-jobs { flex: none; }
+.anim-jobs-title { padding: var(--sp-2) var(--sp-3) var(--sp-1); color: var(--text-tertiary); font-size: var(--fs-xs); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.anim-job {
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+}
+.anim-job:hover { background: var(--surface-2); }
+.anim-job-name { font-weight: 600; color: var(--text-primary); white-space: nowrap; }
+.anim-job-meta { flex: 1; min-width: 0; color: var(--text-tertiary); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Segment picker rows (shared .seg base; selection instead of keep/cut) */
+.anim-segrow { cursor: pointer; }
+.anim-segrow .seg-main { cursor: pointer; }
+.anim-segrow.sel { background: var(--accent-bg); box-shadow: inset 2px 0 0 var(--accent); }
+.anim-segrow.sel:hover { background: var(--accent-bg); }
+.anim-check {
+  width: 16px; height: 16px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border-strong); border-radius: var(--r-sm);
+  color: var(--text-on-accent); background: var(--surface-1);
+}
+.anim-segrow.sel .anim-check { background: var(--accent); border-color: var(--accent); }
+.anim-check .ic { width: 11px; height: 11px; }
+.anim-foot .apply-row { display: flex; }
+
+/* Chat mode */
+.anim-chatwrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.anim-chatwrap.hidden { display: none; }
+.anim-chatwrap.dragging { outline: 2px dashed var(--accent-border); outline-offset: -4px; }
+.anim-jobinfo {
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-1); border-top: 1px solid var(--border-subtle); border-bottom: 1px solid var(--border-subtle);
+  flex: none;
+}
+.anim-jobinfo .anim-job-meta { flex: 1; }
+
+.anim-chat { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-3); }
+.anim-msg { display: flex; flex-direction: column; max-width: 92%; }
+.anim-msg.user { align-self: flex-end; align-items: flex-end; }
+.anim-msg.assistant { align-self: flex-start; align-items: flex-start; }
+.anim-bubble {
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-lg);
+  font-size: var(--fs-md); line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word;
+}
+.anim-msg.user .anim-bubble { background: var(--accent-bg); border: 1px solid var(--accent-border); border-bottom-right-radius: var(--r-sm); }
+.anim-msg.assistant .anim-bubble { background: var(--surface-2); border: 1px solid var(--border-subtle); border-bottom-left-radius: var(--r-sm); }
+.anim-msg.assistant.live .anim-bubble::after { content: "▍"; color: var(--accent-text); animation: pulse 1.1s var(--ease) infinite; }
+.anim-msg.system { align-self: center; text-align: center; color: var(--text-tertiary); font-size: var(--fs-sm); max-width: 100%; }
+.anim-msg.system.err { color: var(--danger-text); }
+.anim-msg-imgs { margin-top: var(--sp-1); color: var(--text-tertiary); font-size: var(--fs-xs); }
+
+/* Tool-activity chips above an assistant reply ("Edit Scene.tsx", "Bash typecheck") */
+.anim-chips { display: flex; flex-wrap: wrap; gap: var(--sp-1); margin-bottom: var(--sp-1); }
+.anim-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px var(--sp-2);
+  background: var(--surface-1); border: 1px solid var(--border-subtle); border-radius: var(--r-pill);
+  color: var(--text-tertiary); font-size: var(--fs-xs);
+  max-width: 100%;
+}
+.anim-chip-d { color: var(--text-disabled); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
+
+/* Composer */
+.anim-inputbox { flex: none; border-top: 1px solid var(--border-subtle); background: var(--surface-1); padding: var(--sp-2) var(--sp-3) var(--sp-3); }
+.anim-chatstatus { min-height: 16px; color: var(--text-tertiary); font-size: var(--fs-sm); padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.anim-attach { display: none; flex-wrap: wrap; gap: var(--sp-1); padding: var(--sp-1) 0; }
+.anim-pill {
+  display: inline-flex; align-items: center; gap: var(--sp-1);
+  padding: 2px var(--sp-2);
+  background: var(--surface-2); border: 1px solid var(--border-default); border-radius: var(--r-pill);
+  font-size: var(--fs-xs); color: var(--text-secondary);
+}
+.anim-pill-x { cursor: pointer; color: var(--text-tertiary); font-size: var(--fs-md); line-height: 1; }
+.anim-pill-x:hover { color: var(--danger-text); }
+.anim-input-row { display: flex; align-items: flex-end; gap: var(--sp-2); }
+.anim-input-row textarea {
+  flex: 1; resize: none; min-height: 38px; max-height: 120px;
+  background: var(--surface-0); color: var(--text-primary);
+  border: 1px solid var(--border-default); border-radius: var(--r-md);
+  padding: var(--sp-2) var(--sp-3);
+  font-family: var(--font-ui); font-size: var(--fs-md); line-height: 1.45;
+}
+.anim-input-row textarea:focus { border-color: var(--accent-border); box-shadow: 0 0 0 2px var(--accent-bg); outline: none; }
+.anim-input-row .icon-btn { min-height: 38px; border: 1px solid var(--border-default); border-radius: var(--r-md); padding: 0 var(--sp-2); }
+
 /* ============================ A11Y / MOTION ============================ */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }

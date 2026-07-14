@@ -1,0 +1,31 @@
+{
+  "name": "opencutagent-animation-kit",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Hand-drawn (Excalidraw-feel) motion design kit for OpenCutAgent, built with Remotion.",
+  "scripts": {
+    "dev": "remotion studio",
+    "studio": "remotion studio",
+    "render": "remotion render",
+    "still": "remotion still",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.484",
+    "@remotion/fonts": "4.0.484",
+    "@remotion/google-fonts": "4.0.484",
+    "@remotion/paths": "4.0.484",
+    "@remotion/zod-types": "4.0.484",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "remotion": "4.0.484",
+    "roughjs": "4.6.6",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.9.0"
+  }
+}

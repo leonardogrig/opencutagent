@@ -298,6 +298,28 @@ async function callScribe(wavPath, apiKey, { model, language, numSpeakers } = {}
   return resp.json();
 }
 
+/**
+ * Read this source's cached transcript words (source-second times) without
+ * transcribing anything. Used by the animation brief to give the chat agent
+ * word-level narration timing; returns [] when nothing is cached.
+ */
+export function readCachedWords(mediaPath, cacheDir) {
+  try {
+    const key = cacheKey(mediaPath);
+    const wholePath = join(cacheDir, "transcripts", key);
+    const rangedPath = join(cacheDir, "transcripts", key.replace(/\.json$/, ".ranged.json"));
+    if (existsSync(wholePath)) {
+      const parsed = JSON.parse(readFileSync(wholePath, "utf8"));
+      if (parsed && Array.isArray(parsed.words)) return parsed.words;
+    }
+    if (existsSync(rangedPath)) {
+      const parsed = JSON.parse(readFileSync(rangedPath, "utf8"));
+      if (parsed && Array.isArray(parsed.words)) return parsed.words;
+    }
+  } catch { /* corrupt/missing cache: the brief just skips word timing */ }
+  return [];
+}
+
 function cacheKey(mediaPath) {
   // Stable per source content: stem + short hash of (abs path, size, mtime).
   // Re-transcribes only if the source file itself changes.

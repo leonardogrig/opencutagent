@@ -1,0 +1,8 @@
+node_modules/
+out/
+build/
+.remotion/
+package-lock.json
+# job folders are created in the synced workspace, never in the repo template,
+# but ignore them here too as a safety net
+src/jobs/*/

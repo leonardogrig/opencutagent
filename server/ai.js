@@ -37,7 +37,7 @@ const IS_WINDOWS = process.platform === "win32";
  * and shell:true would mangle the JSON-schema argument — so a .cmd resolves to
  * its JS entry run with this same node binary instead.
  */
-function resolveClaudeLaunch() {
+export function resolveClaudeLaunch() {
   const asLaunch = (bin) => {
     if (IS_WINDOWS && /\.(cmd|bat)$/i.test(bin)) {
       const cli = join(dirname(bin), "node_modules", "@anthropic-ai", "claude-code", "cli.js");
@@ -63,7 +63,7 @@ function resolveClaudeLaunch() {
 }
 
 /** Turn low-level spawn/auth failures into a message the panel can show verbatim. */
-function friendlyError(message, code) {
+export function friendlyError(message, code) {
   const m = String(message || "");
   if (code === "ENOENT" || code === "EINVAL" || /ENOENT|EINVAL|not found/i.test(m)) {
     return "Couldn't find (or launch) the `claude` CLI. Install Claude Code, or set EDITAGENT_CLAUDE_BIN in .env to its full path (on Windows point it at claude.exe, not a .cmd shim).";

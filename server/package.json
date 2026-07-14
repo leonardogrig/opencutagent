@@ -18,7 +18,7 @@
     "start": "node index.js",
     "check": "node scripts/check.js",
     "smoke": "node test/smoke.js",
-    "test": "node test/logic.js && node test/feature.js && node test/silence.js && node test/silenceApply.js && node test/cancelUndo.js && node test/retakeSegments.js && node test/transcribeRanges.js && node test/xmlRebuild.js && node test/xmlRoundtrip.js && node test/smoke.js"
+    "test": "node test/logic.js && node test/feature.js && node test/silence.js && node test/silenceApply.js && node test/cancelUndo.js && node test/retakeSegments.js && node test/transcribeRanges.js && node test/xmlRebuild.js && node test/xmlRoundtrip.js && node test/animation.js && node test/smoke.js"
   },
   "engines": {
     "node": ">=18"

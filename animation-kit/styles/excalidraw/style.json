@@ -1,0 +1,7 @@
+{
+  "id": "excalidraw",
+  "name": "Excalidraw",
+  "description": "Hand-drawn dark whiteboard: sketchy strokes that draw themselves on, Excalifont handwriting, violet accent on a near-black dot-grid canvas.",
+  "skill": "SKILL.md",
+  "default": true
+}

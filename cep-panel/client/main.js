@@ -200,6 +200,7 @@
       AI.refreshKey();
       if (activeTab === "retake") Retake.onShow(); // resume playhead sync after a reconnect
       else if (activeTab === "silence") Silence.onShow();
+      else if (activeTab === "anim") Anim.onShow();
     };
     ws.onmessage = handleMessage;
     ws.onclose = function () {
@@ -309,8 +310,9 @@
       return;
     }
     if (msg.type === "rpcProgress") { var pp = pendingRpc[msg.id]; if (pp && pp.onProgress) pp.onProgress(msg.message); return; }
-    if (msg.type === "reviewUpdate") { Retake.applyReviewUpdate(msg.segments); return; }
+    if (msg.type === "reviewUpdate") { Retake.applyReviewUpdate(msg.segments); Anim.onSegments(); return; }
     if (msg.type === "silenceConfig") { Silence.applyPushedConfig(msg); return; }
+    if (msg.type === "animEvent") { Anim.onEvent(msg); return; }
     if (msg.requestId && msg.action) { dispatchHostOp(msg); return; }
   }
 
@@ -350,7 +352,7 @@
   }
   function failRpc(reason) { for (var id in pendingRpc) { try { pendingRpc[id].reject(new Error(reason)); } catch (e) {} } pendingRpc = {}; }
 
-  function updateAllButtons() { Retake.updateButtons(); Silence.updateButtons(); }
+  function updateAllButtons() { Retake.updateButtons(); Silence.updateButtons(); Anim.updateButtons(); }
 
   /* ================================================================
    *  SETTINGS POPOVER — Claude (model/effort/sync) + storage (cache).
@@ -680,17 +682,22 @@
    *  TABS
    * ================================================================ */
   var activeTab = "silence";
+  var TAB_PANES = ["silence", "retake", "anim"];
   function selectTab(name) {
     var prev = activeTab;
     activeTab = name;
     var tabs = document.querySelectorAll(".tab");
     for (var i = 0; i < tabs.length; i++) tabs[i].className = "tab" + (tabs[i].getAttribute("data-tab") === name ? " active" : "");
-    $("tab-silence").className = "tabpane" + (name === "silence" ? "" : " hidden");
-    $("tab-retake").className = "tabpane" + (name === "retake" ? "" : " hidden");
+    for (i = 0; i < TAB_PANES.length; i++) {
+      var pane = $("tab-" + TAB_PANES[i]);
+      if (pane) pane.className = "tabpane" + (TAB_PANES[i] === name ? "" : " hidden");
+    }
     if (prev === "retake" && name !== "retake") Retake.onHide();
     if (prev === "silence" && name !== "silence") Silence.onHide();
+    if (prev === "anim" && name !== "anim") Anim.onHide();
     if (name === "silence") Silence.onShow();
     else if (name === "retake") Retake.onShow();
+    else if (name === "anim") Anim.onShow();
   }
   (function wireTabs() {
     var tabs = document.querySelectorAll(".tab");
@@ -2020,17 +2027,520 @@
 
     // setMap is exposed for browser QA (inject a fake reconcile map alongside
     // applyReviewUpdate to exercise Removed badges / stale-cut states, no server).
-    return { wire: wire, updateButtons: updateButtons, applyReviewUpdate: applyReviewUpdate, setMap: setMap, markUndoable: markUndoable, clearUndoable: clearUndoable, onShow: onShow, onHide: onHide, refreshMap: refreshMap };
+    // segments/liveMap/isLoaded feed the Animation tab's segment picker (one
+    // shared loaded transcript; the Animation tab never re-transcribes).
+    return {
+      wire: wire, updateButtons: updateButtons, applyReviewUpdate: applyReviewUpdate, setMap: setMap,
+      markUndoable: markUndoable, clearUndoable: clearUndoable, onShow: onShow, onHide: onHide, refreshMap: refreshMap,
+      segments: function () { return state.segments; },
+      liveMap: function () { return state.liveMap; },
+      isLoaded: function () { return state.loaded; },
+    };
+  })();
+
+  /* ================================================================
+   *  ANIMATION — pick a contiguous run of segments, then chat with a
+   *  headless Claude agent (subscription) that builds a Remotion
+   *  animation for that range; the server renders it and places the
+   *  clip on V2 automatically when the agent signals it's ready.
+   *  Segments come from the Retakes tab's loaded transcript (shared).
+   * ================================================================ */
+  var Anim = (function () {
+    var MAX_IMGS = 4, MAX_IMG_BYTES = 8 * 1024 * 1024;
+    var state = {
+      styles: [], stylesLoaded: false,
+      style: "excalidraw", background: "solid",
+      jobs: [], stateLoaded: false,
+      activeJobId: null,
+      selection: [], anchor: null,
+      busy: false,          // a create / chat turn / render is in flight
+      pendingImgs: [],      // [{name, data(base64)}] queued for the next message
+      liveText: null,       // the streaming assistant bubble's text node
+      liveMsg: null,        // the streaming assistant bubble element
+    };
+    var el = {};
+
+    function cache() {
+      ["animStyle", "animBgCtl", "animBackBtn", "animSelect", "animStatus", "animJobs", "animSegs",
+       "animSelSummary", "animCreateBtn", "animChatWrap", "animJobInfo", "animChatLog", "animChatStatus",
+       "animAttach", "animText", "animSendBtn", "animStopBtn", "animImgBtn", "animFile"]
+        .forEach(function (id) { el[id] = $(id); });
+    }
+    function loadPrefs() {
+      try {
+        state.style = window.localStorage.getItem("editagent.anim.style") || "excalidraw";
+        state.background = window.localStorage.getItem("editagent.anim.bg") === "transparent" ? "transparent" : "solid";
+      } catch (e) {}
+    }
+    function persistPrefs() {
+      try {
+        window.localStorage.setItem("editagent.anim.style", state.style);
+        window.localStorage.setItem("editagent.anim.bg", state.background);
+      } catch (e) {}
+    }
+    function setStatus(text, isErr) { el.animStatus.textContent = text || ""; el.animStatus.className = "statusbar" + (isErr ? " err" : ""); }
+    function setChatStatus(text) { el.animChatStatus.textContent = text || ""; }
+    function activeJob() { for (var i = 0; i < state.jobs.length; i++) if (state.jobs[i].id === state.activeJobId) return state.jobs[i]; return null; }
+
+    /* ---- eligible segments: the loaded transcript minus removed ones ---- */
+    function eligible() {
+      var segs = Retake.segments() || [];
+      var lm = Retake.liveMap() || {};
+      var out = [], i, m;
+      for (i = 0; i < segs.length; i++) {
+        m = lm[segs[i].index];
+        if (m && m.state === "absent") continue; // gone from the timeline — nothing to animate over
+        out.push(segs[i]);
+      }
+      return out;
+    }
+    function segTimes(s) {
+      var lm = Retake.liveMap() || {};
+      var m = lm[s.index];
+      return { s: m && m.s != null ? m.s : s.startSec, e: m && m.e != null ? m.e : s.endSec };
+    }
+
+    /* ---- contiguous selection (click = start/extend/shrink, shift-click = range) ---- */
+    function toggleSelect(i, shift) {
+      var ord = eligible().map(function (s) { return s.index; });
+      var pos = ord.indexOf(i);
+      if (pos < 0) return;
+      var sel = state.selection;
+      if (shift && state.anchor != null && ord.indexOf(state.anchor) >= 0) {
+        var a = ord.indexOf(state.anchor);
+        state.selection = ord.slice(Math.min(a, pos), Math.max(a, pos) + 1);
+      } else if (sel.length && sel.indexOf(i) >= 0) {
+        // clicking an endpoint shrinks the run; clicking inside (or a single) clears it
+        if (sel.length > 1 && i === sel[0]) state.selection = sel.slice(1);
+        else if (sel.length > 1 && i === sel[sel.length - 1]) state.selection = sel.slice(0, -1);
+        else { state.selection = []; state.anchor = null; }
+      } else if (sel.length) {
+        var first = ord.indexOf(sel[0]), last = ord.indexOf(sel[sel.length - 1]);
+        if (pos === first - 1) state.selection = [i].concat(sel);       // grow left
+        else if (pos === last + 1) state.selection = sel.concat([i]);   // grow right
+        else { state.selection = [i]; state.anchor = i; }               // not adjacent — start over
+      } else {
+        state.selection = [i]; state.anchor = i;
+      }
+      renderSegs(); updateButtons();
+    }
+    function selectionSpan() {
+      if (!state.selection.length) return null;
+      var segs = Retake.segments() || [];
+      var byIdx = {}, i;
+      for (i = 0; i < segs.length; i++) byIdx[segs[i].index] = segs[i];
+      var first = byIdx[state.selection[0]], last = byIdx[state.selection[state.selection.length - 1]];
+      if (!first || !last) return null;
+      return { start: segTimes(first).s, end: segTimes(last).e };
+    }
+
+    /* ---- rendering: jobs list, segment picker, chat ---- */
+    function jobBadge(j) {
+      if (j.placed && j.placed.ok) return '<span class="badge keep">On V' + ((j.placed.trackIndex || 1) + 1) + " · v" + esc(j.placed.version) + "</span>";
+      if (j.lastRenderedVersion) return '<span class="badge manual">Rendered v' + esc(j.lastRenderedVersion) + "</span>";
+      return '<span class="badge frag">Draft</span>';
+    }
+    function renderJobs() {
+      if (!state.jobs.length) { el.animJobs.innerHTML = ""; return; }
+      var html = '<div class="anim-jobs-title">Animations in this project</div>', i;
+      for (i = 0; i < state.jobs.length; i++) {
+        var j = state.jobs[i];
+        html += '<div class="anim-job" data-job="' + esc(j.id) + '">' +
+          '<span class="anim-job-name">' + esc(j.id) + "</span>" +
+          '<span class="anim-job-meta">' + (j.durationSec != null ? j.durationSec.toFixed(1) + "s" : "") +
+          (j.range ? " · " + mmss(j.range.startSec) + "–" + mmss(j.range.endSec) : "") +
+          " · " + esc(j.background === "transparent" ? "no bg" : "solid") + "</span>" +
+          '<span class="seg-badges">' + jobBadge(j) + "</span>" +
+          "</div>";
+      }
+      el.animJobs.innerHTML = html;
+    }
+    function renderSegs() {
+      var loaded = Retake.isLoaded();
+      if (!loaded) {
+        el.animSegs.innerHTML = '<div class="empty-state"><div class="es-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5z"/><rect x="3" y="16" width="18" height="5" rx="1.5"/></svg></div><div class="es-title">No segments loaded</div><div class="es-sub">Load segments in the <b>Retakes</b> tab first, then pick a run of neighboring segments here to animate over.</div></div>';
+        return;
+      }
+      var segs = eligible();
+      if (!segs.length) {
+        el.animSegs.innerHTML = '<div class="empty-state"><div class="es-title">Nothing on the timeline</div><div class="es-sub">Every loaded segment was removed. Reload segments in the Retakes tab.</div></div>';
+        return;
+      }
+      var selSet = {}, i;
+      for (i = 0; i < state.selection.length; i++) selSet[state.selection[i]] = 1;
+      var html = '<div class="anim-hint">Click a segment to start a selection, then click neighbors (or shift-click) to extend it. The animation covers the whole selected run.</div>';
+      for (i = 0; i < segs.length; i++) {
+        var s = segs[i];
+        var t = segTimes(s);
+        html += '<div class="seg anim-segrow' + (selSet[s.index] ? " sel" : "") + '" data-i="' + s.index + '">' +
+          '<div class="seg-main">' +
+          '<span class="anim-check">' + (selSet[s.index] ? '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>' : "") + "</span>" +
+          '<span class="seg-time">' + mmss(t.s) + "</span>" +
+          '<span class="seg-text">' + esc(s.text || "(no speech)") + "</span>" +
+          '<span class="seg-badges">' + (s.decision === "cut" && !s.protected ? '<span class="badge cut">Cut</span>' : "") + "</span>" +
+          "</div></div>";
+      }
+      el.animSegs.innerHTML = html;
+      updateSelSummary();
+    }
+    function updateSelSummary() {
+      if (!state.selection.length) { el.animSelSummary.textContent = Retake.isLoaded() ? "Nothing selected" : ""; return; }
+      var span = selectionSpan();
+      var dur = span ? span.end - span.start : 0;
+      el.animSelSummary.textContent = state.selection.length + " segment(s) · " + dur.toFixed(1) + "s · " + (span ? mmss(span.start) + "–" + mmss(span.end) : "");
+    }
+
+    function fmtStyleOption(s) { return '<option value="' + esc(s.id) + '">' + esc(s.name) + "</option>"; }
+    function renderStyles() {
+      var html = "", i;
+      for (i = 0; i < state.styles.length; i++) html += fmtStyleOption(state.styles[i]);
+      el.animStyle.innerHTML = html || '<option value="excalidraw">Excalidraw</option>';
+      el.animStyle.value = state.style;
+      if (el.animStyle.value !== state.style) { state.style = el.animStyle.value || "excalidraw"; persistPrefs(); }
+    }
+    function syncBgCtl() {
+      var inputs = el.animBgCtl.querySelectorAll("input[name=animBg]"), i;
+      for (i = 0; i < inputs.length; i++) {
+        inputs[i].checked = inputs[i].value === state.background;
+        // CEP has no :has() — the selected pill is a JS-set class (see styles.css .segctl)
+        inputs[i].parentNode.className = "segopt" + (inputs[i].checked ? " on" : "");
+      }
+    }
+
+    /* ---- chat rendering ---- */
+    function scrollChat() { try { el.animChatLog.scrollTop = el.animChatLog.scrollHeight; } catch (e) {} }
+    function chipHtml(t) {
+      return '<span class="anim-chip"><svg class="ic ic-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg>' +
+        esc(t.name) + (t.detail ? '<span class="anim-chip-d">' + esc(t.detail) + "</span>" : "") + "</span>";
+    }
+    function msgHtml(m) {
+      if (m.role === "user") {
+        return '<div class="anim-msg user"><div class="anim-bubble">' + esc(m.text) +
+          (m.images && m.images.length ? '<div class="anim-msg-imgs">📎 ' + esc(m.images.join(", ")) + "</div>" : "") +
+          "</div></div>";
+      }
+      if (m.role === "assistant") {
+        var chips = "";
+        if (m.tools && m.tools.length) {
+          var i; chips = '<div class="anim-chips">';
+          for (i = 0; i < m.tools.length; i++) chips += chipHtml(m.tools[i]);
+          chips += "</div>";
+        }
+        return '<div class="anim-msg assistant">' + chips + '<div class="anim-bubble">' + esc(m.text) + "</div></div>";
+      }
+      // system notices (created / placed / errors)
+      return '<div class="anim-msg system"><span>' + esc(m.text) + "</span></div>";
+    }
+    function renderChat() {
+      var job = activeJob();
+      if (!job) return;
+      el.animJobInfo.innerHTML =
+        '<span class="anim-job-name">' + esc(job.id) + "</span>" +
+        '<span class="anim-job-meta">' + job.durationSec.toFixed(1) + "s · " + mmss(job.range.startSec) + "–" + mmss(job.range.endSec) +
+        " · " + esc(job.background === "transparent" ? "no bg" : "solid bg") + " · " + esc(job.style) + "</span>" +
+        '<span class="seg-badges">' + jobBadge(job) + "</span>";
+      var html = "", i;
+      var chat = job.chat || [];
+      for (i = 0; i < chat.length; i++) html += msgHtml(chat[i]);
+      if (!chat.length || (chat.length === 1 && chat[0].role === "system")) {
+        html += '<div class="anim-msg system"><span>Tell the agent what to build for this narration. It knows the transcript and the exact duration; attach reference images if it helps.</span></div>';
+      }
+      el.animChatLog.innerHTML = html;
+      state.liveMsg = null; state.liveText = null;
+      scrollChat();
+    }
+    function appendUserBubble(text, imgs) {
+      el.animChatLog.insertAdjacentHTML("beforeend", msgHtml({ role: "user", text: text, images: imgs.map(function (im) { return im.name; }) }));
+      scrollChat();
+    }
+    function appendSystemBubble(text, isErr) {
+      el.animChatLog.insertAdjacentHTML("beforeend", '<div class="anim-msg system' + (isErr ? " err" : "") + '"><span>' + esc(text) + "</span></div>");
+      scrollChat();
+    }
+    // The streaming assistant bubble: deltas append into a text node; tool chips
+    // collect above it. Created lazily so a reconnect mid-turn still renders.
+    function ensureLiveBubble() {
+      if (state.liveMsg && state.liveMsg.parentNode) return;
+      var wrap = document.createElement("div");
+      wrap.className = "anim-msg assistant live";
+      var chips = document.createElement("div"); chips.className = "anim-chips"; chips.style.display = "none";
+      var bubble = document.createElement("div"); bubble.className = "anim-bubble";
+      var textNode = document.createTextNode("");
+      bubble.appendChild(textNode);
+      wrap.appendChild(chips); wrap.appendChild(bubble);
+      el.animChatLog.appendChild(wrap);
+      state.liveMsg = wrap; state.liveText = textNode;
+    }
+    function finishLiveBubble(finalText) {
+      if (state.liveMsg) {
+        state.liveMsg.className = "anim-msg assistant";
+        if (finalText != null && state.liveText && !state.liveText.nodeValue.trim()) state.liveText.nodeValue = finalText;
+        if (state.liveText && !state.liveText.nodeValue.trim() && state.liveMsg.querySelector(".anim-chips").style.display === "none") {
+          state.liveMsg.parentNode.removeChild(state.liveMsg); // nothing arrived — drop the empty bubble
+        }
+      }
+      state.liveMsg = null; state.liveText = null;
+    }
+
+    /* ---- attachments ---- */
+    function renderAttach() {
+      var html = "", i;
+      for (i = 0; i < state.pendingImgs.length; i++) {
+        html += '<span class="anim-pill" data-img="' + i + '">' + esc(state.pendingImgs[i].name) + '<span class="anim-pill-x">×</span></span>';
+      }
+      el.animAttach.innerHTML = html;
+      el.animAttach.style.display = html ? "" : "none";
+    }
+    function addFiles(files) {
+      var added = 0, i;
+      for (i = 0; i < files.length; i++) {
+        if (state.pendingImgs.length + added >= MAX_IMGS) { toast("Up to " + MAX_IMGS + " images per message.", "info"); break; }
+        (function (f) {
+          if (!/^image\//.test(f.type)) { toast("Skipped " + f.name + " (not an image).", "info"); return; }
+          if (f.size > MAX_IMG_BYTES) { toast("Skipped " + f.name + " (images up to 8 MB).", "info"); return; }
+          var r = new FileReader();
+          r.onload = function () {
+            var s = String(r.result || "");
+            state.pendingImgs.push({ name: f.name, data: s.slice(s.indexOf(",") + 1) });
+            renderAttach(); updateButtons();
+          };
+          r.readAsDataURL(f);
+        })(files[i]);
+        added++;
+      }
+    }
+
+    /* ---- state + server flows ---- */
+    function upsertJob(job) {
+      for (var i = 0; i < state.jobs.length; i++) if (state.jobs[i].id === job.id) { state.jobs[i] = job; return; }
+      state.jobs.push(job);
+    }
+    function refreshState() {
+      if (!connected()) { setStatus("Not connected."); return; }
+      if (!state.stylesLoaded) {
+        callServer("animStyles", {}).then(function (r) {
+          state.styles = (r && r.styles) || [];
+          state.stylesLoaded = true;
+          renderStyles();
+        }, function () {});
+      }
+      callServer("animState", {}).then(function (r) {
+        state.stateLoaded = true;
+        state.jobs = (r && r.jobs) || [];
+        if (r && r.busy && !state.busy) { state.busy = true; } // a turn survives a panel reload
+        if (r && r.error) setStatus(r.error);
+        else if (!state.jobs.length) setStatus("");
+        renderJobs();
+        if (state.activeJobId) {
+          if (!activeJob()) closeJob(); // the job folder disappeared
+          else renderChat();
+        }
+        updateButtons();
+      }, function (err) { setStatus(err.message, true); });
+    }
+    function openJob(id) {
+      state.activeJobId = id;
+      el.animSelect.className = "hidden";
+      el.animChatWrap.className = "anim-chatwrap";
+      el.animBackBtn.style.display = "";
+      el.animStyle.disabled = true;
+      renderChat();
+      updateButtons();
+      try { el.animText.focus(); } catch (e) {}
+    }
+    function closeJob() {
+      state.activeJobId = null;
+      el.animChatWrap.className = "anim-chatwrap hidden";
+      el.animSelect.className = "";
+      el.animBackBtn.style.display = "none";
+      el.animStyle.disabled = false;
+      setChatStatus("");
+      renderSegs(); renderJobs(); updateButtons();
+    }
+    function create() {
+      if (!connected() || state.busy || !state.selection.length) return;
+      state.busy = true; updateButtons();
+      setLoading(el.animCreateBtn, true, "Creating…");
+      setStatus("Creating the animation…");
+      var p = AI.params();
+      callServer("animCreate", { segments: state.selection, style: state.style, background: state.background, model: p.model, effort: p.effort }, function (m) { setStatus(m); }).then(
+        function (res) {
+          state.busy = false;
+          setLoading(el.animCreateBtn, false, "Start animation chat");
+          setStatus("");
+          state.selection = []; state.anchor = null;
+          if (res && res.job) { upsertJob(res.job); renderJobs(); openJob(res.job.id); }
+          toast((res && res.message) || "Animation created.", "success");
+          updateButtons();
+        },
+        function (err) {
+          state.busy = false;
+          setLoading(el.animCreateBtn, false, "Start animation chat");
+          var cancelled = /cancel/i.test(err.message);
+          setStatus(cancelled ? "Stopped." : err.message, !cancelled);
+          if (!cancelled) toast(err.message, "error");
+          updateButtons();
+        }
+      );
+    }
+    function send() {
+      var text = (el.animText.value || "").replace(/^\s+|\s+$/g, "");
+      if (!connected() || state.busy || !state.activeJobId) return;
+      if (!text && !state.pendingImgs.length) return;
+      var jobId = state.activeJobId;
+      state.busy = true; updateButtons();
+      appendUserBubble(text, state.pendingImgs);
+      var images = state.pendingImgs;
+      state.pendingImgs = []; renderAttach();
+      el.animText.value = "";
+      setChatStatus("Thinking…");
+      ensureLiveBubble();
+      var p = AI.params();
+      callServer("animChat", { jobId: jobId, text: text, images: images, model: p.model, effort: p.effort }, function (m) { setChatStatus(m); }).then(
+        function (res) {
+          state.busy = false;
+          finishLiveBubble(res && res.text);
+          setChatStatus("");
+          if (res && res.placed) toast(res.placed, "success");
+          refreshState(); // pick up the persisted chat + placed/render state
+          updateButtons();
+        },
+        function (err) {
+          state.busy = false;
+          finishLiveBubble(null);
+          setChatStatus("");
+          var cancelled = /cancel/i.test(err.message);
+          appendSystemBubble(cancelled ? "Stopped." : err.message, !cancelled);
+          if (!cancelled) toast(err.message, "error");
+          refreshState();
+          updateButtons();
+        }
+      );
+    }
+    function stop() { if (!state.busy) return; callServer("animCancel", {}).catch(function () {}); setChatStatus("Stopping…"); }
+
+    /* ---- server pushes (streamed turn events) ---- */
+    function onEvent(msg) {
+      if (!msg || msg.jobId !== state.activeJobId) {
+        // still surface a finished placement for a job that's not open
+        if (msg && msg.event && msg.event.kind === "placed") toast(msg.event.text || "Animation placed on the timeline.", "success");
+        return;
+      }
+      var ev = msg.event || {};
+      if (ev.kind === "delta") {
+        ensureLiveBubble();
+        state.liveText.nodeValue += ev.text || "";
+        scrollChat();
+      } else if (ev.kind === "tool") {
+        ensureLiveBubble();
+        var chips = state.liveMsg.querySelector(".anim-chips");
+        chips.style.display = "";
+        chips.insertAdjacentHTML("beforeend", chipHtml(ev));
+        scrollChat();
+      } else if (ev.kind === "status") {
+        setChatStatus(ev.text || "");
+      } else if (ev.kind === "placed") {
+        appendSystemBubble(ev.text || "Placed on the timeline.");
+        setChatStatus("");
+      } else if (ev.kind === "assistantDone") {
+        finishLiveBubble(ev.text);
+      } else if (ev.kind === "turnDone") {
+        setChatStatus("");
+      }
+    }
+    // Segments changed (reviewUpdate push): the picker's rows may be stale.
+    function onSegments() {
+      state.selection = []; state.anchor = null;
+      if (activeTab === "anim" && !state.activeJobId) { renderSegs(); updateButtons(); }
+    }
+
+    function updateButtons() {
+      if (!el.animCreateBtn) return;
+      setBusyBar("anim", state.busy);
+      var conn = connected();
+      el.animCreateBtn.disabled = !conn || state.busy || !state.selection.length;
+      el.animSendBtn.disabled = !conn || state.busy || !state.activeJobId;
+      el.animSendBtn.style.display = state.busy && state.activeJobId ? "none" : "";
+      el.animStopBtn.style.display = state.busy && state.activeJobId ? "" : "none";
+      el.animImgBtn.disabled = state.busy;
+      el.animStyle.disabled = !!state.activeJobId;
+      var inputs = el.animBgCtl.querySelectorAll("input"), i;
+      for (i = 0; i < inputs.length; i++) inputs[i].disabled = !!state.activeJobId || state.busy;
+      updateSelSummary();
+    }
+    function onShow() {
+      renderSegs();
+      syncBgCtl();
+      refreshState();
+      updateButtons();
+    }
+    function onHide() { /* nothing to stop — chat pushes are cheap and keyed to the open job */ }
+
+    function wire() {
+      cache();
+      loadPrefs();
+      syncBgCtl();
+      renderStyles();
+      renderAttach();
+      el.animSegs.addEventListener("click", function (ev) {
+        var row = ev.target.closest ? ev.target.closest(".seg") : null;
+        if (!row) return;
+        toggleSelect(parseInt(row.getAttribute("data-i"), 10), ev.shiftKey);
+      });
+      el.animJobs.addEventListener("click", function (ev) {
+        var row = ev.target.closest ? ev.target.closest(".anim-job") : null;
+        if (row) openJob(row.getAttribute("data-job"));
+      });
+      el.animStyle.addEventListener("change", function () { state.style = el.animStyle.value; persistPrefs(); });
+      el.animBgCtl.addEventListener("change", function () {
+        var checked = el.animBgCtl.querySelector("input:checked");
+        state.background = checked && checked.value === "transparent" ? "transparent" : "solid";
+        persistPrefs(); syncBgCtl();
+      });
+      el.animCreateBtn.addEventListener("click", create);
+      el.animBackBtn.addEventListener("click", closeJob);
+      el.animSendBtn.addEventListener("click", send);
+      el.animStopBtn.addEventListener("click", stop);
+      el.animText.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+      });
+      el.animImgBtn.addEventListener("click", function () { el.animFile.click(); });
+      el.animFile.addEventListener("change", function () { addFiles(el.animFile.files || []); el.animFile.value = ""; });
+      el.animAttach.addEventListener("click", function (ev) {
+        var pill = ev.target.closest ? ev.target.closest(".anim-pill") : null;
+        if (!pill || !ev.target.className || String(ev.target.className).indexOf("anim-pill-x") < 0) return;
+        state.pendingImgs.splice(parseInt(pill.getAttribute("data-img"), 10), 1);
+        renderAttach(); updateButtons();
+      });
+      // Drag-and-drop reference images onto the chat.
+      el.animChatWrap.addEventListener("dragover", function (e) { e.preventDefault(); el.animChatWrap.classList.add("dragging"); });
+      el.animChatWrap.addEventListener("dragleave", function () { el.animChatWrap.classList.remove("dragging"); });
+      el.animChatWrap.addEventListener("drop", function (e) {
+        e.preventDefault();
+        el.animChatWrap.classList.remove("dragging");
+        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+      });
+    }
+
+    // onEvent/setJobs/openJob are exposed for browser QA (no server needed):
+    // __editagent.Anim.setJobs([{id:"anim-x",durationSec:10,range:{...},chat:[...]}]);
+    // __editagent.Anim.openJob("anim-x"); __editagent.Anim.onEvent({jobId:"anim-x", event:{kind:"delta", text:"…"}})
+    return {
+      wire: wire, updateButtons: updateButtons, onShow: onShow, onHide: onHide,
+      onEvent: onEvent, onSegments: onSegments, openJob: openJob, refreshState: refreshState,
+      setJobs: function (jobs) { state.jobs = jobs || []; renderJobs(); if (state.activeJobId) renderChat(); },
+    };
   })();
 
   /* ---------- init ---------- */
   Silence.wire();
   Retake.wire();
+  Anim.wire();
   AI.wire();
   selectTab("silence");
   connect();
   // Debug handle for browser-based QA (the gallery/QA flow drives the real panel
   // outside CEP, where there's no server to push data): lets a console inject
   // segments/config, e.g. __editagent.Retake.applyReviewUpdate([...]).
-  window.__editagent = { Retake: Retake, Silence: Silence, AI: AI };
+  window.__editagent = { Retake: Retake, Silence: Silence, AI: AI, Anim: Anim };
 })();

@@ -924,6 +924,121 @@ $.editagent = (function () {
     };
   }
 
+  // ---- Animation tab host ops ----
+  // The server renders an animation clip to disk, then: getProjectDir tells it
+  // where to keep the job's files (next to the .prproj), importFootage brings
+  // the render into the project, placeFootage OVERWRITES it onto a video track
+  // (overwrite, not insert — an insert would ripple the whole timeline).
+
+  function getProjectDir() {
+    var proj = app.project;
+    if (!proj) throw new Error("No project is open in Premiere.");
+    var path = "";
+    try { path = proj.path ? String(proj.path) : ""; } catch (e) { path = ""; }
+    if (!path) throw new Error("Save your Premiere project first (File > Save), then retry.");
+    var f = new File(path);
+    var dir = f.parent ? f.parent.fsName : null;
+    if (!dir) throw new Error("Couldn't resolve the project folder from " + path);
+    return { dir: dir, projectPath: f.fsName, projectName: String(proj.name || "") };
+  }
+
+  function findBin(root, name) {
+    var n = 0;
+    try { n = root.children ? root.children.numItems : 0; } catch (e) { n = 0; }
+    for (var i = 0; i < n; i++) {
+      var ch = root.children[i];
+      try {
+        // ProjectItemType.BIN === 2
+        if (ch && Number(ch.type) === 2 && String(ch.name) === name) return ch;
+      } catch (e2) {}
+    }
+    return null;
+  }
+
+  function importFootage(p) {
+    var proj = app.project;
+    if (!proj) throw new Error("No project is open in Premiere.");
+    if (!p || !p.path) throw new Error("importFootage: missing path");
+    var existing = findProjectItemByPath(p.path);
+    if (existing) return { ok: true, existed: true };
+
+    var binName = p.binName ? String(p.binName) : "OpenCutAgent Animations";
+    var bin = findBin(proj.rootItem, binName);
+    if (!bin) { try { bin = proj.rootItem.createBin(binName); } catch (e) { bin = null; } }
+
+    var err = null;
+    try {
+      proj.importFiles([p.path], true, bin || proj.rootItem, false);
+    } catch (e1) {
+      try { proj.importFiles([p.path]); } catch (e2) { err = String(e2 && e2.message ? e2.message : e2); }
+    }
+    var item = findProjectItemByPath(p.path);
+    if (!item) throw new Error("Premiere didn't import the rendered file" + (err ? ": " + err : "."));
+    return { ok: true, existed: false, bin: bin ? String(bin.name) : null };
+  }
+
+  function ensureVideoTrack(seq, vIdx) {
+    if (seq.videoTracks.numTracks > vIdx) return true;
+    // QE is the only scripting way to add tracks; signatures vary by version.
+    var forms = [
+      function (q) { q.addTracks(vIdx + 1 - seq.videoTracks.numTracks, seq.videoTracks.numTracks, 0); },
+      function (q) { q.addTracks(vIdx + 1 - seq.videoTracks.numTracks, seq.videoTracks.numTracks, 0, 0, 0); },
+      function (q) { q.addTracks(); }
+    ];
+    try {
+      app.enableQE();
+      var qeSeq = qe.project.getActiveSequence();
+      for (var i = 0; i < forms.length && seq.videoTracks.numTracks <= vIdx; i++) {
+        try { forms[i](qeSeq); } catch (e) {}
+      }
+    } catch (e2) {}
+    return seq.videoTracks.numTracks > vIdx;
+  }
+
+  function placeFootage(p) {
+    var seq = requireSeq();
+    if (!p || !p.path) throw new Error("placeFootage: missing path");
+    var vIdx = p.trackIndex != null ? p.trackIndex : 1; // default V2
+    if (!ensureVideoTrack(seq, vIdx)) {
+      throw new Error("The sequence has no V" + (vIdx + 1) + " track and one couldn't be added. Add a video track (right-click the track headers > Add Track), then retry.");
+    }
+    var pItem = findProjectItemByPath(p.path);
+    if (!pItem) throw new Error("The rendered file isn't in the project. Import it first.");
+
+    var timebase = Number(seq.timebase);
+    var fps = TPS / timebase;
+    function snapSec(sec) {
+      var ticks = Math.round(sec * TPS);
+      return (Math.round(ticks / timebase) * timebase) / TPS;
+    }
+    var targetSec = snapSec(p.targetSeconds != null ? p.targetSeconds : 0);
+
+    var track = seq.videoTracks[vIdx];
+    var err = null, placed = false;
+    // overwriteClip's time argument is version-finicky: seconds number,
+    // Time object, or a ticks string depending on the build.
+    try { track.overwriteClip(pItem, targetSec); placed = true; } catch (e1) {
+      try { track.overwriteClip(pItem, makeTime(targetSec)); placed = true; } catch (e2) {
+        try { track.overwriteClip(pItem, secToTicksStr(targetSec)); placed = true; } catch (e3) {
+          err = String(e3 && e3.message ? e3.message : e3);
+        }
+      }
+    }
+    if (!placed) throw new Error("overwriteClip failed: " + (err || "unknown error"));
+
+    // Verify a clip actually landed at the target on that track.
+    var tFrame = Math.round(targetSec * fps);
+    var found = null;
+    for (var j = 0; j < track.clips.numItems; j++) {
+      var c = track.clips[j];
+      if (Math.abs(Math.round(c.start.seconds * fps) - tFrame) <= 1) {
+        found = { start: c.start.seconds, end: c.end.seconds, name: String(c.name) };
+        break;
+      }
+    }
+    return { ok: !!found, targetSeconds: targetSec, trackIndex: vIdx, placed: found };
+  }
+
   function runScript(p) {
     var r = eval(p.jsx); // escape hatch — runs arbitrary ExtendScript by design
     return r === undefined ? null : r;
@@ -946,6 +1061,9 @@ $.editagent = (function () {
     clearEditMarkers: clearEditMarkers,
     exportXmlSequence: exportXmlSequence,
     importXmlSequence: importXmlSequence,
+    getProjectDir: getProjectDir,
+    importFootage: importFootage,
+    placeFootage: placeFootage,
     runScript: runScript
   };
 

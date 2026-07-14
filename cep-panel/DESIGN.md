@@ -125,6 +125,21 @@ primary buttons keep crisp dark labels (white-on-Ember is only ~3.1:1).
   the footer count only PENDING cuts (`isPendingCut` = cut, unprotected, still
   on the timeline); already-applied cuts show as "N removed" instead.
 
+- **Animation tab** — third tab (`data-tab="anim"`), two stacked modes inside one
+  pane swapped via `.hidden`: **picker** (`#animSelect`: existing animations as
+  `.anim-job` rows + a `.anim-segrow` segment list with `.anim-check` boxes; a
+  selection must be one contiguous run, `.sel` = accent tint + inset accent bar)
+  and **chat** (`.anim-chatwrap`: `.anim-jobinfo` header, `.anim-chat` scroll of
+  `.anim-msg` bubbles — user right/accent-tinted, assistant left/surface-2 with
+  `.anim-chips` tool-activity pills above, `.system` centered notices; the live
+  streaming bubble carries `.live` = a pulsing caret ::after). Composer
+  `.anim-inputbox`: status line, attach pills (`.anim-pill` + ×), textarea
+  (Enter sends, Shift+Enter newline), single-primary Send that swaps to a
+  danger Stop while the agent works. Top `.anim-bar`: Style select + a
+  `.segctl-sm` Solid bg / No bg control (both freeze once a job is open — they
+  are fixed at creation). Drag-drop images onto the chat = `.dragging` dashed
+  outline. Selected `.segctl` pills are a JS-set `.on` class (no `:has()`).
+
 ## Constraints / gotchas
 
 - **Client-first.** All UI lives in `cep-panel/client/` (styles.css, index.html,

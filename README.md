@@ -22,6 +22,7 @@ Two tabs, two price tags:
 - **Fast apply:** big cut lists skip in-place razoring and rebuild the tightened sequence via Premiere's own XML round-trip, so a 2-hour timeline with 2000+ cuts applies in seconds, with effects and transforms preserved.
 - **Export transcript:** saves the kept speech as a YouTube-ready `.srt`, with caption times matching the tightened video.
 - **Live sync:** the panel follows Premiere's playhead, highlights the segment under it, and clicking a segment seeks the timeline.
+- **Animation** tab (Claude subscription): select a run of neighboring segments and chat with a Claude agent that builds a hand-drawn [Remotion](https://www.remotion.dev) animation for exactly that part of the narration (it gets the full transcript plus word-level timing, and accepts reference images). When it finishes, the clip is rendered and placed on **V2** over the selected range automatically: as solid-canvas b-roll or as a transparent overlay (ProRes 4444 alpha). Chats, renders and sources are saved next to your `.prproj` in an "OpenCutAgent Animations" folder.
 
 ## How it works
 

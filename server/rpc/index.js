@@ -12,6 +12,7 @@ import { restoreUndo, hasUndo } from "../undo.js";
 import { liveEnv, setEnvKey } from "../config.js";
 import { askClaude, THRESHOLD_SCHEMA, thresholdSystem, thresholdPrompt, analyzeRetakes } from "../ai.js";
 import { readUsage, recordUsage } from "../usage.js";
+import { animHandlers } from "../animation/index.js";
 
 // Model/effort come from the panel dropdowns; fall back to .env, then sane defaults.
 function aiModel(params) { return params.model || liveEnv("EDITAGENT_AI_MODEL") || "latest"; }
@@ -411,7 +412,7 @@ async function cacheInfo(_params, _helpers, ctx) {
  * the panel double-confirms before calling this.
  */
 async function clearCache(_params, helpers, ctx) {
-  if (ctx.panelOp) throw new Error("Busy. Wait for the current operation to finish, then clear the cache.");
+  if (ctx.panelOp || ctx.animOp) throw new Error("Busy. Wait for the current operation to finish, then clear the cache.");
   const before = await cacheInfo(_params, helpers, ctx);
   for (const name of CACHE_SUBDIRS) {
     const dir = join(ctx.cacheDir, name);
@@ -509,6 +510,10 @@ const ENV_SPECS = [
   { key: "EDITAGENT_ROUNDTRIP", def: "1", desc: "Fast applies round-trip Premiere's own XML so effects survive. Set 0 to use the bare rebuild (drops effects)." },
   { key: "EDITAGENT_TRIM_EXCESS_PAD", def: "0.15", desc: "Seconds of breathing room kept around words when Remove excess trims non-speech air." },
   { key: "EDITAGENT_TRIM_EXCESS_MIN", def: "0.2", desc: "Non-speech air shorter than this many seconds is left alone by Remove excess." },
+  { key: "EDITAGENT_ANIM_TIMEOUT_MS", def: "1200000", desc: "Hard timeout for one animation chat turn, in milliseconds." },
+  { key: "EDITAGENT_ANIM_RENDER_TIMEOUT_MS", def: "1800000", desc: "Hard timeout for one animation render, in milliseconds." },
+  { key: "EDITAGENT_ANIM_TRACK", def: "1", desc: "0-based video track animation clips are placed on. 1 = V2." },
+  { key: "EDITAGENT_ANIM_HOME", def: "", desc: "Where the animation workspace lives. Empty = ~/.opencutagent/animation-kit.", live: false },
   { key: "PREMIERE_BRIDGE_PORT", def: "3001", desc: "Port the panel and server talk over.", live: false },
   { key: "FFMPEG_BIN", def: "ffmpeg", desc: "Path to ffmpeg if it isn't on PATH.", live: false },
   { key: "EDITAGENT_CACHE_DIR", def: "", desc: "Where transcripts and audio scans are cached. Empty = the project's .cache folder.", live: false },
@@ -565,7 +570,7 @@ async function ping() {
   return { ok: true };
 }
 
-const HANDLERS = { ping, cancel, loadSegments, applyDecisions, softApply, clearMarkers, exportTranscript, timelineMap, reinsertSegment, analyzeLevels, applySilences, aiThreshold, aiRetakes, undoLastApply, undoStatus, cacheInfo, clearCache, usageLog, keyStatus, setApiKey, envList, setEnv };
+const HANDLERS = { ping, cancel, loadSegments, applyDecisions, softApply, clearMarkers, exportTranscript, timelineMap, reinsertSegment, analyzeLevels, applySilences, aiThreshold, aiRetakes, undoLastApply, undoStatus, cacheInfo, clearCache, usageLog, keyStatus, setApiKey, envList, setEnv, ...animHandlers };
 
 export function createRpcDispatcher(ctx) {
   return async (method, params, helpers) => {
