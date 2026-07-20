@@ -73,6 +73,30 @@ export function parseRenderProgress(chunk) {
   return Math.min(99, Math.round((done / total) * 100));
 }
 
+/**
+ * If the LIVE sequence's frame size differs from the job's composition size
+ * (the size was captured wrong at creation, or the user changed sequences),
+ * render with Remotion's --scale so the clip still comes out at the sequence's
+ * real resolution. Only when the aspect ratio matches — scaling can't fix a
+ * horizontal composition for a vertical sequence. Pure (unit-tested).
+ * @returns {{scale:number, outWidth:number|null, warning:string|null}}
+ */
+export function renderScale(job, seqW, seqH) {
+  const w = Number(seqW), h = Number(seqH);
+  if (!(w > 0) || !(h > 0) || !(job.width > 0) || !(job.height > 0)) return { scale: 1, outWidth: null, warning: null };
+  if (w === job.width && h === job.height) return { scale: 1, outWidth: w, warning: null };
+  const aspectJob = job.width / job.height;
+  const aspectSeq = w / h;
+  if (Math.abs(aspectJob - aspectSeq) > 0.01) {
+    return {
+      scale: 1,
+      outWidth: null,
+      warning: `The sequence is ${w}x${h} but this animation was created at ${job.width}x${job.height} (a different shape). Create a new animation to match.`,
+    };
+  }
+  return { scale: w / job.width, outWidth: w, warning: null };
+}
+
 function renderTimeoutMs() {
   const v = parseInt(liveEnv("EDITAGENT_ANIM_RENDER_TIMEOUT_MS") || "", 10);
   return Number.isFinite(v) && v > 0 ? v : 1800000; // 30 min hard stop for one render
@@ -82,7 +106,7 @@ function renderTimeoutMs() {
  * Render one version of the job's composition into its output folder.
  * @returns {Promise<{path:string, file:string, durationSec:number|null}>}
  */
-export async function renderJob({ kitDirPath, job, version, onProgress = () => {}, token }) {
+export async function renderJob({ kitDirPath, job, version, scale = 1, onProgress = () => {}, token }) {
   const transparent = job.background === "transparent";
   const ext = transparent ? ".mov" : ".mp4";
   const file = `${job.id}-v${version}${ext}`;
@@ -97,6 +121,7 @@ export async function renderJob({ kitDirPath, job, version, onProgress = () => {
   const args = [cli, "render", job.id, tmpPath, "--timeout=120000", "--muted", "--image-format=png", "--overwrite"];
   if (transparent) args.push("--codec=prores", "--prores-profile=4444", "--pixel-format=yuva444p10le");
   else args.push("--codec=h264", "--crf=14");
+  if (Number.isFinite(scale) && scale > 0 && Math.abs(scale - 1) > 0.001) args.push(`--scale=${scale}`);
 
   onProgress(`Rendering animation v${version}…`);
   let lastPct = -1;

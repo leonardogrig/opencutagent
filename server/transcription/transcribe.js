@@ -342,16 +342,10 @@ function cacheKey(mediaPath) {
  * (the pre-ranged cache format) if one is already cached.
  */
 export async function transcribeSourceRanges(mediaPath, ranges, opts = {}) {
-  const { cacheDir, model, language, numSpeakers, refresh = false } = opts;
+  const { cacheDir, model, language, numSpeakers, refresh = false, cacheOnly = false } = opts;
   // Progress messages ("Transcribing: 42% (3/8 parts done)") for the panel status line;
   // a throwing callback must never kill a transcription that's billing credits.
   const onProgress = (msg) => { if (opts.onProgress) { try { opts.onProgress(msg); } catch { /* ignore */ } } };
-  const apiKey = liveEnv("ELEVENLABS_API_KEY");
-  if (!apiKey) {
-    throw new TranscribeError(
-      "ELEVENLABS_API_KEY is not set. Add your ElevenLabs API key in the panel's settings (gear icon > ElevenLabs), or in the project .env, then retry."
-    );
-  }
   if (!existsSync(mediaPath)) {
     throw new TranscribeError(`Source media not found on disk: ${mediaPath}`);
   }
@@ -385,6 +379,23 @@ export async function transcribeSourceRanges(mediaPath, ranges, opts = {}) {
   if (!uncovered.length) {
     log(`transcript cache hit (ranged, ${cache.words.length} words): ${basename(rangedPath)}`);
     return { payload: { words: cache.words }, cached: true, path: rangedPath };
+  }
+
+  // cacheOnly = the panel's silent auto-load: it must NEVER bill. Anything not
+  // fully covered by cache aborts here with a typed error the caller can eat.
+  if (cacheOnly) {
+    const err = new TranscribeError("The cached transcript doesn't cover the current timeline. Click Load segments to transcribe the new parts.");
+    err.code = "cache_incomplete";
+    throw err;
+  }
+
+  // The key is only needed once we actually have something to transcribe — a
+  // fully-cached reload must keep working with no key configured at all.
+  const apiKey = liveEnv("ELEVENLABS_API_KEY");
+  if (!apiKey) {
+    throw new TranscribeError(
+      "ELEVENLABS_API_KEY is not set. Add your ElevenLabs API key in the panel's settings (gear icon > ElevenLabs), or in the project .env, then retry."
+    );
   }
 
   // Recombine the gaps to transcribe, then pack the islands into a few duration-capped

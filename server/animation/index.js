@@ -15,9 +15,9 @@ import {
   readRenderSignal, saveRefImage, animTrackIndex,
 } from "./jobs.js";
 import { runChatTurn } from "./chat.js";
-import { renderJob } from "./render.js";
+import { renderJob, renderScale } from "./render.js";
 import { reconcile, requireReview } from "../review.js";
-import { callHostHealing, mmss, round3 } from "../tools/util.js";
+import { callHostHealing, getTimeline, mmss, round3 } from "../tools/util.js";
 import { recordUsage } from "../usage.js";
 
 function anim(ctx) {
@@ -59,9 +59,11 @@ function getJob(ctx, jobId) {
 function jobSummary(job) {
   return {
     id: job.id,
+    title: job.title || job.id,
     createdAt: job.createdAt,
     style: job.style,
     background: job.background,
+    trackIndex: job.trackIndex != null ? job.trackIndex : animTrackIndex(),
     fps: job.fps,
     width: job.width,
     height: job.height,
@@ -73,6 +75,7 @@ function jobSummary(job) {
     lastRenderedVersion: job.lastRenderedVersion || 0,
     renders: job.renders || [],
     placed: job.placed || null,
+    outDir: job.outDir, // so the panel's folder button can reveal it in Finder/Explorer
     chat: readChat(job),
   };
 }
@@ -104,23 +107,37 @@ async function placeRender(ctx, job, renderInfo, onStatus) {
     }
   } catch { /* segments not loaded (fresh server): fall back to the stored position */ }
 
+  const trackIndex = job.trackIndex != null ? job.trackIndex : animTrackIndex();
   await callHostHealing(ctx, "importFootage", { path: renderInfo.path }, { timeoutMs: 60000 });
   const res = await callHostHealing(
     ctx,
     "placeFootage",
-    { path: renderInfo.path, targetSeconds: target, trackIndex: animTrackIndex() },
+    { path: renderInfo.path, targetSeconds: target, trackIndex },
     { timeoutMs: 60000 }
   );
   const ok = !!(res && res.ok);
   if (!ok) warning = (warning ? warning + " " : "") + "Premiere didn't confirm the clip landed; check the timeline (Cmd+Z reverts).";
-  return { ok, targetSeconds: res ? res.targetSeconds : target, trackIndex: animTrackIndex(), warning };
+  return { ok, targetSeconds: res ? res.targetSeconds : target, trackIndex, warning };
 }
 
 /** Render the signaled version and put it on the timeline; updates + persists the job. */
 async function renderAndPlace(ctx, job, kitPath, signal, token) {
   const status = (text) => pushEvent(ctx, job.id, { kind: "status", text });
-  const renderInfo = await renderJob({ kitDirPath: kitPath, job, version: signal.version, token, onProgress: status });
+  // Match the LIVE sequence's resolution, even when the job's captured size is
+  // wrong or the sequence changed: same-aspect mismatches render with --scale,
+  // different-aspect mismatches get a plain warning instead of a distorted clip.
+  let scale = 1;
+  let scaleWarning = null;
+  try {
+    const timeline = await getTimeline(ctx);
+    const s = renderScale(job, timeline.sequence && timeline.sequence.frameSizeHorizontal, timeline.sequence && timeline.sequence.frameSizeVertical);
+    scale = s.scale;
+    scaleWarning = s.warning;
+    if (s.outWidth && s.scale !== 1) status(`Rendering at the sequence's ${s.outWidth}p width…`);
+  } catch { /* host unreachable for the size check: render at the job's own size */ }
+  const renderInfo = await renderJob({ kitDirPath: kitPath, job, version: signal.version, scale, token, onProgress: status });
   const placeInfo = await placeRender(ctx, job, renderInfo, status);
+  if (signal.title) job.title = signal.title; // the agent named what it built
   job.lastRenderedVersion = signal.version;
   job.renders = job.renders || [];
   job.renders.push({ version: signal.version, file: renderInfo.file, ts: Date.now(), notes: signal.notes || "" });
@@ -128,10 +145,11 @@ async function renderAndPlace(ctx, job, kitPath, signal, token) {
   saveJob(job);
   const text =
     (placeInfo.ok
-      ? `Placed v${signal.version} (${renderInfo.file}) on V${animTrackIndex() + 1} at ${mmss(placeInfo.targetSeconds)}.`
-      : `Rendered v${signal.version} (${renderInfo.file}) but placement wasn't confirmed.`) +
+      ? `Animation v${signal.version} placed on V${placeInfo.trackIndex + 1} at ${mmss(placeInfo.targetSeconds)}.`
+      : `Animation v${signal.version} rendered, but Premiere didn't confirm it landed. Check the timeline.`) +
+    (scaleWarning ? " " + scaleWarning : "") +
     (placeInfo.warning ? " " + placeInfo.warning : "");
-  appendChat(job, { role: "system", kind: "placed", text });
+  appendChat(job, { role: "system", kind: "placed", text, targetSeconds: placeInfo.targetSeconds, trackIndex: placeInfo.trackIndex });
   pushEvent(ctx, job.id, { kind: "placed", version: signal.version, file: renderInfo.file, ok: placeInfo.ok, targetSeconds: placeInfo.targetSeconds, text });
   return { renderInfo, placeInfo, text };
 }
@@ -182,6 +200,7 @@ async function animCreate(params, helpers, ctx) {
       indexes: params.segments,
       style: params.style,
       background: params.background,
+      trackIndex: params.track,
       projectDir: dir,
     }, kitPath);
     a.jobs.set(job.id, job);
@@ -284,10 +303,10 @@ async function animCancel(_params, _helpers, ctx) {
 }
 
 /**
- * Remove an animation: its composition leaves the kit (so it stops rendering),
- * the chat/renders folder next to the project is kept unless deleteOutputs.
- * A clip already on the timeline stays — deleting timeline content is the
- * user's call in Premiere.
+ * Remove an animation from the list: its composition leaves the kit (so it
+ * stops rendering) and it is flagged discarded. Rendered files stay on disk by
+ * default so a clip already on the timeline doesn't go offline — deleting
+ * timeline content is the user's call in Premiere.
  */
 async function animDiscard(params, _helpers, ctx) {
   if (ctx.animOp) throw new Error("The animation agent is still working. Stop it first.");
@@ -295,7 +314,7 @@ async function animDiscard(params, _helpers, ctx) {
   const kitPath = await ensureKit({});
   discardJob(job, kitPath, { deleteOutputs: params.deleteOutputs === true });
   anim(ctx).jobs.delete(job.id);
-  return { ok: true, message: `Discarded ${job.id}.` + (params.deleteOutputs ? "" : " Its chat and rendered files stay in the project's OpenCutAgent Animations folder.") };
+  return { ok: true, message: `Deleted ${job.id} from the list.` + (params.deleteOutputs ? "" : " Any clip it placed stays on the timeline (its rendered file is kept).") };
 }
 
 export const animHandlers = { animStyles, animState, animCreate, animChat, animCancel, animDiscard };

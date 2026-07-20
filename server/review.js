@@ -2,6 +2,7 @@
 // MCP tools so they operate on the same segment list. The AI analysis itself is
 // done by Claude (in the conversation, via MCP tools) — no external LLM.
 import { getTimeline, round3, isAborted } from "./tools/util.js";
+import { hasAudioStream } from "./audio/probe.js";
 import { liveEnv } from "./config.js";
 import { transcribeSourceRanges } from "./transcription/transcribe.js";
 import { groupIntoPhrases, sliceWordsToWindow } from "./transcription/segments.js";
@@ -120,9 +121,15 @@ export async function buildReview(ctx, opts = {}, onProgress = () => {}) {
       skipped.push({ clip: clip.id, reason: `non-100% speed (${clip.speed}x)` });
       continue;
     }
+    // Silent video (graphics, placed animation renders on V2) has nothing to
+    // transcribe and would kill the ffmpeg WAV extract with a cryptic error.
+    if (!(await hasAudioStream(clip.mediaPath))) {
+      skipped.push({ clip: clip.id, reason: "no audio stream (silent clip)" });
+      continue;
+    }
     if (!wordsByMedia.has(clip.mediaPath)) {
       onProgress(`Transcribing ${clip.mediaPath.split(/[\\\/]/).pop()}…`);
-      const { payload } = await transcribeSourceRanges(clip.mediaPath, rangesByMedia.get(clip.mediaPath), { cacheDir: ctx.cacheDir, refresh: opts.refresh, model: opts.transcribeModel, onProgress });
+      const { payload } = await transcribeSourceRanges(clip.mediaPath, rangesByMedia.get(clip.mediaPath), { cacheDir: ctx.cacheDir, refresh: opts.refresh, model: opts.transcribeModel, cacheOnly: !!opts.cacheOnly, onProgress });
       wordsByMedia.set(clip.mediaPath, payload.words || []);
     }
     // Slice the source words to THIS clip's window, then phrase within the clip
@@ -163,12 +170,87 @@ export async function buildReview(ctx, opts = {}, onProgress = () => {}) {
       });
     }
   }
-  segments.sort((a, b) => a.startFrame - b.startFrame);
-  segments.forEach((s, i) => (s.index = i));
-  const fragments = classifyFragments(segments, opts);
+  segments.sort((a, b) => a.startFrame - b.startFrame || a.trackIndex - b.trackIndex);
+  const deduped = dedupeStackedSegments(segments);
+  if (!deduped.length && skipped.length) {
+    throw new Error(
+      `Nothing to transcribe: all ${skipped.length} clip(s) were skipped (${[...new Set(skipped.map((s) => s.reason))].join("; ")}).`
+    );
+  }
+  deduped.forEach((s, i) => (s.index = i));
+  const fragments = classifyFragments(deduped, opts);
 
-  ctx.review = { sequence: seq.name, frameRate: seq.frameRate, dropFrame: seq.dropFrame, segments, skipped, fragments };
+  // Rebuilding after a timeline edit must not throw away the user's (or
+  // Claude's) review: carry Keep/Cut/Protected marks onto the new tiling by
+  // source-range overlap. Explicit fresh loads (Start Over) skip this.
+  if (opts.carryMarks && ctx.review && Array.isArray(ctx.review.segments) && ctx.review.segments.length) {
+    carryOverMarks(ctx.review.segments, deduped);
+  }
+
+  ctx.review = { sequence: seq.name, frameRate: seq.frameRate, dropFrame: seq.dropFrame, segments: deduped, skipped, fragments };
   return ctx.review;
+}
+
+/**
+ * Copy non-default review marks (Cut / Protected / manual / group / reason)
+ * from an old segment list onto a freshly rebuilt one, matching by media +
+ * track + source-range overlap (>= 50% of the new segment's span). Segments
+ * left at their defaults carry nothing, so deterministic auto-cuts (no-speech)
+ * on the new list are never un-done by a default old neighbor. Pure (unit-tested).
+ * @returns {number} how many new segments received marks
+ */
+export function carryOverMarks(oldSegments, newSegments) {
+  const marked = new Map(); // media|trackType|trackIndex -> [old segments with explicit marks]
+  for (const o of oldSegments) {
+    if (o.mediaPath == null || o.sourceInSec == null || o.sourceOutSec == null) continue;
+    if (!(o.decision === "cut" || o.protected || o.manual || o.group != null)) continue;
+    const k = `${normPath(o.mediaPath)}|${o.trackType}|${o.trackIndex}`;
+    if (!marked.has(k)) marked.set(k, []);
+    marked.get(k).push(o);
+  }
+  let carried = 0;
+  for (const s of newSegments) {
+    if (s.mediaPath == null || s.sourceInSec == null || s.sourceOutSec == null) continue;
+    const span = s.sourceOutSec - s.sourceInSec;
+    if (span <= 0) continue;
+    const cands = marked.get(`${normPath(s.mediaPath)}|${s.trackType}|${s.trackIndex}`);
+    if (!cands) continue;
+    let best = null, bestOv = 0;
+    for (const o of cands) {
+      const ov = Math.min(s.sourceOutSec, o.sourceOutSec) - Math.max(s.sourceInSec, o.sourceInSec);
+      if (ov > bestOv) { bestOv = ov; best = o; }
+    }
+    if (!best || bestOv < span * 0.5) continue;
+    s.protected = !!best.protected;
+    s.decision = best.protected ? "keep" : best.decision;
+    s.manual = !!best.manual;
+    if (best.group != null) s.group = best.group;
+    if (best.reason) s.reason = best.reason;
+    carried++;
+  }
+  return carried;
+}
+
+/**
+ * Drop exact-duplicate tiles that come from the SAME footage stacked on two
+ * video tracks (a common talking-head pattern: a scaled copy of the A-roll on
+ * V2 for punch-ins). Without this every spoken line lists twice in the panel.
+ * Only true duplicates collapse — same media, same source window, same timeline
+ * frames; the copy on the LOWEST video track wins (input must be sorted by
+ * startFrame then trackIndex, which buildReview does). Pure (unit-tested).
+ */
+export function dedupeStackedSegments(segments) {
+  const seen = new Set();
+  const out = [];
+  for (const s of segments) {
+    const key = s.mediaPath == null
+      ? null
+      : `${normPath(s.mediaPath)}|${s.startFrame}|${s.endFrame}|${Math.round((s.sourceInSec || 0) * 100)}|${Math.round((s.sourceOutSec || 0) * 100)}`;
+    if (key && seen.has(key)) continue;
+    if (key) seen.add(key);
+    out.push(s);
+  }
+  return out;
 }
 
 export function requireReview(ctx) {

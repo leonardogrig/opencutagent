@@ -127,15 +127,27 @@ primary buttons keep crisp dark labels (white-on-Ember is only ~3.1:1).
 
 - **Animation tab** — third tab (`data-tab="anim"`), two stacked modes inside one
   pane swapped via `.hidden`: **picker** (`#animSelect`: existing animations as
-  `.anim-job` rows + a `.anim-segrow` segment list with `.anim-check` boxes; a
-  selection must be one contiguous run, `.sel` = accent tint + inset accent bar)
+  `.anim-job` rows — meta includes a relative age ("14 min ago") and a hover
+  `.anim-job-x` delete with an inline two-step "Sure?" (`.confirm`) — plus a
+  `.anim-segrow` segment list with `.anim-check` boxes; a selection must be one
+  contiguous run, `.sel` = accent tint + inset accent bar). Inside a chat the
+  Style select + bg toggle HIDE (fixed at creation) and the header gains a
+  `.anim-folder` icon button that reveals the job's folder in Finder/Explorer.
   and **chat** (`.anim-chatwrap`: `.anim-jobinfo` header, `.anim-chat` scroll of
-  `.anim-msg` bubbles — user right/accent-tinted, assistant left/surface-2 with
-  `.anim-chips` tool-activity pills above, `.system` centered notices; the live
-  streaming bubble carries `.live` = a pulsing caret ::after). Composer
-  `.anim-inputbox`: status line, attach pills (`.anim-pill` + ×), textarea
-  (Enter sends, Shift+Enter newline), single-primary Send that swaps to a
-  danger Stop while the agent works. Top `.anim-bar`: Style select + a
+  `.anim-msg` bubbles — user right/accent-tinted, assistant left/surface-2,
+  `.system` centered notices). The audience is a VIDEO EDITOR: tool calls and
+  intermediate agent narration are NEVER rendered — they collapse into ONE
+  self-replacing **activity bubble** pinned last in the log
+  (`.anim-msg.assistant.activity`: dashed bubble + `.anim-activity-dot` pulse)
+  with friendly verbs ("Reading the brief…", "Sketching the animation…",
+  "Rendering v2: 47%") that replace in place and never stack; real messages
+  insert above it and it disappears when the turn ends. Only the turn's FINAL
+  reply becomes a normal bubble. `.anim-msg.system.placed` ("Animation v1
+  placed on V2 at 10:50. Click to view.", success-green, underline on hover)
+  and the job-header `.badge.seekable` carry `data-seek` → clicking moves
+  Premiere's playhead to the animation's start. Composer `.anim-inputbox`:
+  attach pills (`.anim-pill` + ×), textarea (Enter sends, Shift+Enter newline),
+  single-primary Send that swaps to a danger Stop while the agent works. Top `.anim-bar`: Style select + a
   `.segctl-sm` Solid bg / No bg control (both freeze once a job is open — they
   are fixed at creation). Drag-drop images onto the chat = `.dragging` dashed
   outline. Selected `.segctl` pills are a JS-set `.on` class (no `:has()`).

@@ -61,8 +61,11 @@ canvas size, fps, exact duration and background mode are in the system prompt an
 When the animation compiles and you are satisfied, write `src/jobs/<jobId>/render.json`:
 
 ```json
-{ "version": 1, "notes": "what changed in this version" }
+{ "version": 1, "notes": "what changed in this version", "title": "Webhook branches" }
 ```
+
+`title` is a short human name for what you built (2 to 3 plain words, 20 characters max); the
+panel uses it to label this animation for the editor.
 
 After your reply, the server sees the new version, renders the composition with the correct
 encoder settings, and places the clip on the timeline over the selected range. When the user asks

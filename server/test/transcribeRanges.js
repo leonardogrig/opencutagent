@@ -1,9 +1,15 @@
 // Unit checks for timeline-scoped transcription's interval math: we transcribe ONLY the
 // source audio on the timeline (merged into islands), and a union cache means a reload
 // after cutting never re-bills already-transcribed audio. Pure logic — no ffmpeg/Scribe.
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, basename, extname } from "node:path";
+import { statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import {
   mergeIntervals, subtractIntervals, mergeWords,
   planConcatBatches, buildConcatLayout, remapConcatWords, parseFfmpegOutTime,
+  transcribeSourceRanges,
 } from "../transcription/transcribe.js";
 
 let failures = 0;
@@ -154,6 +160,41 @@ const pairs = (iv) => iv.map((r) => [r.start, r.end]);
   check("parseFfmpegOutTime: chunk without progress -> null", parseFfmpegOutTime("size=  128kB bitrate=...") === null, parseFfmpegOutTime("size=..."));
   check("parseFfmpegOutTime: garbage -> null, never NaN", parseFfmpegOutTime("") === null, parseFfmpegOutTime(""));
 }
+
+// cacheOnly (the panel's silent auto-load): a fully covered timeline loads from
+// the ranged cache with NO key and NO billing; anything uncovered aborts with a
+// typed cache_incomplete error before any key check or Scribe call.
+await (async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "ocatr-"));
+  const savedKey = process.env.ELEVENLABS_API_KEY;
+  delete process.env.ELEVENLABS_API_KEY; // prove covered loads need no key at all
+  try {
+    const media = join(tmp, "talk.mp4");
+    writeFileSync(media, "fake media bytes");
+    // Mirror transcribe.js cacheKey (stem + hash of path|size|mtime).
+    const st = statSync(media);
+    const h = createHash("sha1").update(`${media}|${st.size}|${Math.round(st.mtimeMs)}`).digest("hex").slice(0, 10);
+    const stem = basename(media, extname(media)).replace(/[^\w.-]/g, "_");
+    mkdirSync(join(tmp, "transcripts"), { recursive: true });
+    writeFileSync(
+      join(tmp, "transcripts", `${stem}.${h}.ranged.json`),
+      JSON.stringify({ islands: [{ start: 5, end: 30 }], words: [{ type: "word", text: "hello", start: 12, end: 12.4 }] })
+    );
+
+    const covered = await transcribeSourceRanges(media, [{ start: 10, end: 20 }], { cacheDir: tmp, cacheOnly: true });
+    check("cacheOnly: fully covered range loads from cache, no key needed", covered.cached === true && covered.payload.words.length === 1, covered);
+
+    let err = null;
+    try { await transcribeSourceRanges(media, [{ start: 10, end: 60 }], { cacheDir: tmp, cacheOnly: true }); }
+    catch (e) { err = e; }
+    check("cacheOnly: uncovered range aborts with cache_incomplete (never bills)", !!err && err.code === "cache_incomplete", err && err.message);
+    // (The billing path's key requirement isn't asserted here: liveEnv reads the
+    // real project .env, so the check would depend on the developer's machine.)
+  } finally {
+    if (savedKey != null) process.env.ELEVENLABS_API_KEY = savedKey;
+    rmSync(tmp, { recursive: true, force: true });
+  }
+})();
 
 console.log(failures === 0 ? "\nAll transcribe-range checks passed." : `\n${failures} transcribe-range check(s) FAILED.`);
 process.exit(failures === 0 ? 0 : 1);

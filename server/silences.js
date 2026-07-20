@@ -10,6 +10,7 @@
 // round-trip / generated rebuild for big ripple applies, else the batched
 // razor-lift-close host ops).
 import { getTimeline, round3, ToolError, isAborted, callHostHealing } from "./tools/util.js";
+import { hasAudioStream } from "./audio/probe.js";
 import { rebuildViaXml } from "./rebuild.js";
 import { roundtripViaXml } from "./roundtrip.js";
 import { liveEnv } from "./config.js";
@@ -61,6 +62,12 @@ export async function buildLevels(ctx, opts = {}, onProgress = () => {}) {
       skipped.push({ clip: clip.id, reason: `non-100% speed (${clip.speed}x)` });
       continue;
     }
+    // Silent video (graphics, placed animation renders) has no audio stream:
+    // scanning it would kill ffmpeg with "Output file does not contain any stream".
+    if (!(await hasAudioStream(clip.mediaPath))) {
+      skipped.push({ clip: clip.id, reason: "no audio stream (silent clip)" });
+      continue;
+    }
     onProgress(`Analyzing loudness: ${clip.mediaPath.split(/[\\\/]/).pop()}…`);
     const { envelope } = await getLevels(clip.mediaPath, { cacheDir: ctx.cacheDir, refresh: !!opts.refresh });
     hopSec = envelope.hopSec;
@@ -79,7 +86,11 @@ export async function buildLevels(ctx, opts = {}, onProgress = () => {}) {
       db: slice.db,
     });
   }
-  if (clips.length === 0) throw new ToolError("No 100%-speed media clips to analyze (all skipped).");
+  if (clips.length === 0) {
+    throw new ToolError(
+      `Nothing to scan: all ${skipped.length} clip(s) were skipped (${[...new Set(skipped.map((s) => s.reason))].join("; ")}).`
+    );
+  }
 
   const stats = levelStats(allDb);
   ctx.silence = {

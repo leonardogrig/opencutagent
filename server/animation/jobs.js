@@ -16,14 +16,35 @@ import { liveEnv } from "../config.js";
 import { log } from "../log.js";
 
 export const ANIM_DIRNAME = "OpenCutAgent Animations";
-/** Rendered clips land on this 0-based video track (V2), per the feature spec. */
+/** Default 0-based video track for placement (V2); the panel's Track select overrides per job. */
 export function animTrackIndex() {
   const v = parseInt(liveEnv("EDITAGENT_ANIM_TRACK") || "", 10);
   return Number.isFinite(v) && v >= 0 ? v : 1;
 }
 
+/** Normalize a panel-chosen track index: integers V1..V16 pass (the panel warns about V1's overwrite), anything else falls back to the default. Pure (unit-tested). */
+export function clampTrackIndex(v) {
+  if (v == null || v === "") return animTrackIndex(); // Number(null) is 0 — don't let "unset" mean V1
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 0 && n <= 15 ? n : animTrackIndex();
+}
+
 export function newJobId(now = Date.now()) {
   return "anim-" + now.toString(36);
+}
+
+/**
+ * A human title for a job, at most `max` characters: derived from the selected
+ * narration at creation, replaced by the agent's own name for the animation
+ * once it builds one (render.json "title"). Pure (unit-tested).
+ */
+export function jobTitle(text, max = 20) {
+  const t = String(text == null ? "" : text).replace(/\s+/g, " ").trim();
+  if (!t) return "Animation";
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max - 1);
+  const sp = cut.lastIndexOf(" ");
+  return (sp > Math.floor(max / 2) ? cut.slice(0, sp) : cut).trimEnd() + "…";
 }
 
 /* ============================ selection ============================ */
@@ -226,7 +247,9 @@ export function loadJobsFrom(projectDir) {
     if (!e.isDirectory()) continue;
     try {
       const j = JSON.parse(readFileSync(join(root, e.name, "job.json"), "utf8"));
-      if (j && j.id) { j.outDir = join(root, e.name); jobs.push(j); }
+      // Discarded jobs stay on disk (their rendered clips may still be on the
+      // timeline and must not go offline) but leave the panel's list.
+      if (j && j.id && !j.discarded) { j.outDir = join(root, e.name); jobs.push(j); }
     } catch { /* skip */ }
   }
   jobs.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
@@ -254,7 +277,7 @@ export function appendChat(job, entry) {
  * folder + brief, registers the composition, and persists the job record next
  * to the Premiere project.
  */
-export async function createJob(ctx, { indexes, style, background, projectDir }, kitDirPath) {
+export async function createJob(ctx, { indexes, style, background, trackIndex, projectDir }, kitDirPath) {
   const review = requireReview(ctx);
   const { map, timeline } = await reconcile(ctx);
   const check = validateSelection(review.segments, map, indexes);
@@ -264,16 +287,25 @@ export async function createJob(ctx, { indexes, style, background, projectDir },
   const fps = renderFps(seq.frameRate || review.frameRate || 30);
   const width = Number(seq.frameSizeHorizontal) || 1920;
   const height = Number(seq.frameSizeVertical) || 1080;
+  if (!Number(seq.frameSizeHorizontal) || !Number(seq.frameSizeVertical)) {
+    // Render-time --scale still corrects same-aspect sizes, but log the gap.
+    log(`animation: sequence frame size unavailable, composing at ${width}x${height}`);
+  }
   const durationSec = check.range.endSec - check.range.startSec;
   const durationInFrames = Math.max(1, Math.round(durationSec * fps));
   if (durationSec < 0.5) throw new Error("The selected range is shorter than half a second. Select a longer run of segments.");
 
   const id = newJobId();
+  const selText = check.indexes
+    .map((i) => { const s = review.segments.find((x) => x.index === i); return (s && s.text) || ""; })
+    .join(" ");
   const job = {
     id,
+    title: jobTitle(selText),
     createdAt: Date.now(),
     style: style || "excalidraw",
     background: background === "transparent" ? "transparent" : "solid",
+    trackIndex: clampTrackIndex(trackIndex),
     fps, width, height, durationInFrames,
     range: check.range,
     segmentIndexes: check.indexes,
@@ -327,11 +359,20 @@ export async function createJob(ctx, { indexes, style, background, projectDir },
   return job;
 }
 
-/** Remove a job everywhere it lives (kit folder + manifest; the output folder stays unless deleteOutputs). */
+/**
+ * Discard a job: its composition leaves the kit (stops rendering) and it is
+ * flagged discarded so the list no longer shows it. The output folder is KEPT
+ * by default — a rendered clip already on the timeline references its file, and
+ * deleting it would knock the clip offline. deleteOutputs erases everything.
+ */
 export function discardJob(job, kitDirPath, { deleteOutputs = false } = {}) {
   try { rmSync(join(kitDirPath, "src", "jobs", job.id), { recursive: true, force: true }); } catch { /* ignore */ }
   regenerateManifest(kitDirPath);
-  if (deleteOutputs) { try { rmSync(job.outDir, { recursive: true, force: true }); } catch { /* ignore */ } }
+  if (deleteOutputs) {
+    try { rmSync(job.outDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  } else {
+    try { saveJob({ ...job, discarded: true }); } catch { /* ignore */ }
+  }
 }
 
 /** Snapshot the agent's scene source into the output folder (posterity/survives kit resets). */
@@ -347,7 +388,13 @@ export function readRenderSignal(job, kitDirPath) {
   try {
     const parsed = JSON.parse(readFileSync(join(kitDirPath, "src", "jobs", job.id, "render.json"), "utf8"));
     const version = parseInt(parsed && parsed.version, 10);
-    if (Number.isFinite(version) && version > 0) return { version, notes: typeof parsed.notes === "string" ? parsed.notes : "" };
+    if (Number.isFinite(version) && version > 0) {
+      return {
+        version,
+        notes: typeof parsed.notes === "string" ? parsed.notes : "",
+        title: typeof parsed.title === "string" && parsed.title.trim() ? jobTitle(parsed.title) : null,
+      };
+    }
   } catch { /* absent or malformed: not ready */ }
   return null;
 }

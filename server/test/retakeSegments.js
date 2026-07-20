@@ -2,8 +2,9 @@
 // Pure logic, synthetic words — no Premiere, no transcript cache needed.
 import { TICKS_PER_SECOND, sourceRangeToTimelineFrames } from "../transcription/timecode.js";
 import { groupIntoPhrases, sliceWordsToWindow } from "../transcription/segments.js";
-import { partitionClip, classifyFragments, reconcile, reinsertTarget, planEditMarkers, MARKER_COLORS, srtTimestamp, wrapCaption, buildTranscriptCues, formatSrt } from "../review.js";
+import { partitionClip, classifyFragments, reconcile, reinsertTarget, planEditMarkers, MARKER_COLORS, srtTimestamp, wrapCaption, buildTranscriptCues, formatSrt, dedupeStackedSegments, carryOverMarks } from "../review.js";
 import { planRetakeChunks } from "../ai.js";
+import { stderrListsAudio } from "../audio/probe.js";
 
 const TPS = Number(TICKS_PER_SECOND);
 const TB = String(TPS / 30); // 30fps timebase
@@ -320,6 +321,88 @@ check("wrapCaption: wraps past maxLen on word boundary", wrapCaption("aaaa bbbb 
   const expected = "1\n00:00:00,000 --> 00:00:01,500\nhi\n\n2\n00:00:01,500 --> 00:00:03,000\nthere\n";
   check("formatSrt: canonical SubRip block layout", srt === expected, JSON.stringify(srt));
   check("formatSrt: empty cue list -> empty string", formatSrt([]) === "", JSON.stringify(formatSrt([])));
+}
+
+// dedupeStackedSegments: the same footage stacked on two video tracks (scaled
+// punch-in copy on V2) must not list every line twice; only EXACT duplicates
+// collapse, keeping the lowest track (input pre-sorted by startFrame, trackIndex).
+{
+  const dseg = (track, startFrame, endFrame, inSec, outSec, media = "/v/a.mp4") => ({
+    mediaPath: media, trackIndex: track, startFrame, endFrame,
+    sourceInSec: inSec, sourceOutSec: outSec, text: "x",
+  });
+  const stacked = [
+    dseg(0, 0, 60, 0, 2),
+    dseg(1, 0, 60, 0, 2),      // V2 copy of the same tile -> dropped
+    dseg(0, 60, 120, 2, 4),
+    dseg(1, 60, 120, 2.5, 4),  // same frames, DIFFERENT source range -> kept
+    dseg(0, 120, 180, 4, 6, "/v/b.mp4"), // other media at same frames as next -> kept
+    dseg(1, 120, 180, 4, 6),
+  ];
+  const out = dedupeStackedSegments(stacked);
+  check("dedupe: exact stacked duplicate collapses to the lowest track", out.length === 5 && out.filter((s) => s.startFrame === 0).length === 1 && out.find((s) => s.startFrame === 0).trackIndex === 0, out.map((s) => `${s.trackIndex}@${s.startFrame}`));
+  check("dedupe: same frames but different source range both survive", out.filter((s) => s.startFrame === 60).length === 2, null);
+  check("dedupe: different media at the same position both survive", out.filter((s) => s.startFrame === 120).length === 2, null);
+  const noMedia = [{ mediaPath: null, startFrame: 0, endFrame: 10 }, { mediaPath: null, startFrame: 0, endFrame: 10 }];
+  check("dedupe: segments without media identity are never deduped", dedupeStackedSegments(noMedia).length === 2, null);
+  check("dedupe: case/slash-insensitive media match", dedupeStackedSegments([
+    dseg(0, 0, 60, 0, 2, "C:\\Media\\A.MP4"), dseg(1, 0, 60, 0, 2, "c:/media/a.mp4"),
+  ]).length === 1, null);
+}
+
+// stderrListsAudio: the ffmpeg -i probe that lets silent clips (graphics, muted
+// animation renders on V2) be SKIPPED instead of crashing the audio passes.
+{
+  const withAudio = [
+    "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'in.mp4':",
+    "  Stream #0:0[0x1](und): Video: h264 (High), yuv420p(progressive), 1920x1080, 30 fps",
+    "  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a), 48000 Hz, stereo, fltp, 192 kb/s",
+    "At least one output file must be specified",
+  ].join("\n");
+  const videoOnly = [
+    "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'anim.mp4':",
+    "  Stream #0:0[0x1](und): Video: h264 (High), yuv420p(progressive), 1000x1000, 1034 kb/s, 30 fps",
+    "At least one output file must be specified",
+  ].join("\n");
+  check("probe: audio stream detected", stderrListsAudio(withAudio) === true, null);
+  check("probe: video-only file has no audio", stderrListsAudio(videoOnly) === false, null);
+  check("probe: empty/garbage stderr means no audio", stderrListsAudio("") === false && stderrListsAudio("Audio: mention outside a stream line") === false, null);
+}
+
+// carryOverMarks: rebuilding after a timeline edit keeps the user's review.
+// Marks travel by media + track + source overlap; default segments carry nothing.
+{
+  const cseg = (inSec, outSec, extra = {}) => ({
+    mediaPath: "/v/a.mp4", trackType: "video", trackIndex: 0,
+    sourceInSec: inSec, sourceOutSec: outSec,
+    decision: "keep", protected: false, manual: false, group: null, reason: null,
+    ...extra,
+  });
+  const oldSegs = [
+    cseg(0, 4, { decision: "cut", group: 7, reason: "restart" }),
+    cseg(4, 8),                                   // default keep: carries nothing
+    cseg(8, 12, { protected: true, manual: true }),
+  ];
+  // New tiling after an edit: first tile trimmed, one tile split in two.
+  const newSegs = [
+    cseg(1, 4),        // 75% inside the old cut -> becomes cut
+    cseg(4, 8),        // matches the unmarked keep -> untouched
+    cseg(8, 10),       // first half of the protected tile
+    cseg(10, 12),      // second half of the protected tile
+    cseg(20, 24),      // brand new footage -> untouched
+    cseg(0, 4, { mediaPath: "/v/b.mp4" }), // other media at same range -> untouched
+  ];
+  const n = carryOverMarks(oldSegs, newSegs);
+  check("carry: trimmed cut segment stays cut with its group + reason", newSegs[0].decision === "cut" && newSegs[0].group === 7 && newSegs[0].reason === "restart", newSegs[0]);
+  check("carry: default old segment doesn't stamp the new one", newSegs[1].decision === "keep" && newSegs[1].group == null, newSegs[1]);
+  check("carry: a split tile inherits protection on both halves", newSegs[2].protected === true && newSegs[3].protected === true && newSegs[2].decision === "keep", [newSegs[2], newSegs[3]]);
+  check("carry: new footage and other media stay untouched", newSegs[4].manual === false && newSegs[5].decision === "keep", null);
+  check("carry: reports how many segments got marks", n === 3, n);
+
+  // Overlap under 50% of the new span must NOT carry (a sliver of an old cut).
+  const barely = [cseg(3.5, 8)];
+  carryOverMarks(oldSegs, barely);
+  check("carry: sub-50% overlap carries nothing", barely[0].decision === "keep", barely[0]);
 }
 
 console.log(failures === 0 ? "\nAll retake-segment checks passed." : `\n${failures} retake-segment check(s) FAILED.`);

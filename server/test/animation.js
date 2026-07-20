@@ -8,11 +8,11 @@ import { join } from "node:path";
 import {
   validateSelection, manifestSource, sceneScaffold, buildBrief, renderFps, newJobId,
   regenerateManifest, readRenderSignal, saveRefImage, saveJob, loadJobsFrom, readChat, appendChat,
-  jobsRootFor, animTrackIndex,
+  jobsRootFor, animTrackIndex, discardJob, jobTitle, clampTrackIndex,
 } from "../animation/jobs.js";
 import { listStyles, readStyleSkill } from "../animation/kit.js";
 import { toolDetail, buildSystemAppend } from "../animation/chat.js";
-import { parseFfDuration, parseRenderProgress } from "../animation/render.js";
+import { parseFfDuration, parseRenderProgress, renderScale } from "../animation/render.js";
 
 let failures = 0;
 function check(label, cond, got) {
@@ -91,9 +91,16 @@ check("30.00003 rounds to 30", renderFps(30.00003) === 30, renderFps(30.00003));
 check("29.97 stays fractional", approx(renderFps(29.97), 29.97, 0.001), renderFps(29.97));
 check("bad fps falls back to 30", renderFps(NaN) === 30, renderFps(NaN));
 
-/* ---------- job id + track ---------- */
+/* ---------- job id + track + title ---------- */
 check("job ids are composition-safe", /^anim-[a-z0-9]+$/.test(newJobId()), newJobId());
 check("default animation track is V2 (index 1)", animTrackIndex() === 1, animTrackIndex());
+check("clampTrackIndex: a chosen V3 passes", clampTrackIndex(2) === 2, clampTrackIndex(2));
+check("clampTrackIndex: V1 is allowed (user's call; the panel warns)", clampTrackIndex(0) === 0, clampTrackIndex(0));
+check("clampTrackIndex: garbage falls back to the default", clampTrackIndex("x") === 1 && clampTrackIndex(null) === 1 && clampTrackIndex(-2) === 1, null);
+check("jobTitle: short text passes through", jobTitle("Webhook branches") === "Webhook branches", jobTitle("Webhook branches"));
+const longTitle = jobTitle("For example, I've just asked it a really long question");
+check("jobTitle: long text truncates to <= 20 chars on a word", longTitle.length <= 20 && longTitle.endsWith("…"), longTitle);
+check("jobTitle: empty text falls back", jobTitle("") === "Animation" && jobTitle("   ") === "Animation", null);
 
 /* ---------- kit: styles registry + skill ---------- */
 const styles = listStyles();
@@ -119,7 +126,10 @@ try {
   check("no render.json means no signal", readRenderSignal(j2, kitDir) === null, null);
   writeFileSync(join(kitDir, "src", "jobs", "anim-aaa", "render.json"), JSON.stringify({ version: 2, notes: "first pass" }));
   const sig = readRenderSignal(j2, kitDir);
-  check("render.json signal parses", sig && sig.version === 2 && sig.notes === "first pass", sig);
+  check("render.json signal parses", sig && sig.version === 2 && sig.notes === "first pass" && sig.title === null, sig);
+  writeFileSync(join(kitDir, "src", "jobs", "anim-aaa", "render.json"), JSON.stringify({ version: 3, title: "A very long animation title from the agent" }));
+  const sig2 = readRenderSignal(j2, kitDir);
+  check("render.json title is adopted and clamped to 20 chars", sig2 && sig2.title && sig2.title.length <= 20, sig2);
   writeFileSync(join(kitDir, "src", "jobs", "anim-aaa", "render.json"), "{bad json");
   check("malformed render.json is ignored", readRenderSignal(j2, kitDir) === null, null);
 
@@ -139,6 +149,12 @@ try {
   check("jobs load back from the project folder", loaded.length === 1 && loaded[0].id === "anim-bbb", loaded);
   const chat = readChat(loaded[0]);
   check("chat log persists in order", chat.length === 2 && chat[0].role === "user" && chat[1].tools[0].name === "Write", chat);
+
+  // discard: flagged + kept on disk (a placed clip's render must not go offline), gone from the list
+  discardJob(loaded[0], kitDir);
+  const onDisk = JSON.parse(readFileSync(join(job3.outDir, "job.json"), "utf8"));
+  check("discard flags the job instead of deleting its files", onDisk.discarded === true && existsSync(join(job3.outDir, "chat.json")), onDisk);
+  check("discarded jobs leave the list", loadJobsFrom(projectDir).length === 0, loadJobsFrom(projectDir));
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }
@@ -150,6 +166,19 @@ const sys = buildSystemAppend({ id: "anim-z", fps: 30, width: 1920, height: 1080
 check("system prompt pins the job folder + duration", sys.includes("src/jobs/anim-z/") && sys.includes("duration 90 frames (3.00s)"), sys);
 check("system prompt embeds the style skill", sys.includes("<style-skill>") && sys.includes("STYLE GUIDE HERE"), null);
 check("system prompt teaches the render.json protocol", sys.includes('render.json as {"version": N'), null);
+
+/* ---------- render scale (sequence-resolution self-heal) ---------- */
+{
+  const j = { width: 1920, height: 1080 };
+  check("renderScale: matching sequence renders 1:1", renderScale(j, 1920, 1080).scale === 1 && renderScale(j, 1920, 1080).warning === null, renderScale(j, 1920, 1080));
+  const up = renderScale(j, 3840, 2160);
+  check("renderScale: 4K sequence upscales a 1080p composition 2x", up.scale === 2 && up.outWidth === 3840 && up.warning === null, up);
+  const down = renderScale({ width: 3840, height: 2160 }, 1920, 1080);
+  check("renderScale: downscale works too", approx(down.scale, 0.5), down);
+  const vert = renderScale(j, 1080, 1920);
+  check("renderScale: aspect mismatch warns instead of distorting", vert.scale === 1 && /different shape/.test(vert.warning), vert);
+  check("renderScale: unknown sequence size renders at the job's own size", renderScale(j, null, undefined).scale === 1 && renderScale(j, 0, 0).warning === null, renderScale(j, null, undefined));
+}
 
 /* ---------- render parsing ---------- */
 check("ffmpeg duration parses", approx(parseFfDuration("...\n  Duration: 00:01:23.45, start: 0\n"), 83.45, 0.001), parseFfDuration("Duration: 00:01:23.45"));

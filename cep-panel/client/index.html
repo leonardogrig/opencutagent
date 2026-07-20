@@ -395,7 +395,7 @@
       <section id="tab-anim" class="tabpane hidden">
         <div class="anim">
           <div class="anim-bar">
-            <label class="anim-style" data-tip="The visual language the animation agent builds in: premade hand-drawn components plus a design guide it follows. More styles can be added later.">
+            <label class="anim-style" id="animStyleWrap" data-tip="The visual language the animation agent builds in: premade hand-drawn components plus a design guide it follows. More styles can be added later.">
               <span>Style</span>
               <select id="animStyle"></select>
             </label>
@@ -403,6 +403,10 @@
               <label class="segopt"><input type="radio" name="animBg" value="solid" checked /><span>Solid bg</span></label>
               <label class="segopt"><input type="radio" name="animBg" value="transparent" /><span>No bg</span></label>
             </div>
+            <label class="anim-style" id="animTrackWrap" data-tip="Which video track the finished clip is placed on. The list shows this sequence's real tracks, plus one new track above them. Careful with V1: placement overwrites, so it would replace your footage in that range.">
+              <span>Track</span>
+              <select id="animTrack"></select>
+            </label>
             <span class="grow"></span>
             <button id="animBackBtn" class="ghost" style="display:none" data-tip="Back to the segment picker and your other animations. The chat is saved; reopening the animation resumes it.">
               <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
@@ -412,7 +416,12 @@
 
           <!-- MODE 1: pick segments / open a previous animation -->
           <div id="animSelect">
-            <div class="statusrow"><div id="animStatus" class="statusbar"></div></div>
+            <div class="statusrow">
+              <div id="animStatus" class="statusbar"></div>
+              <label class="chk follow" data-tip="Highlights and scrolls to the segment under Premiere's playhead as you scrub, so it's easy to pick the run you're hearing.">
+                <input type="checkbox" id="animFollow" class="switch" role="switch" checked /> Follow playhead
+              </label>
+            </div>
             <div id="animJobs" class="anim-jobs"></div>
             <div id="animSegs" class="segments anim-segs">
               <div class="empty-state">
@@ -436,7 +445,6 @@
             <div id="animChatLog" class="anim-chat"></div>
             <div class="anim-inputbox">
               <div id="animAttach" class="anim-attach"></div>
-              <div id="animChatStatus" class="anim-chatstatus"></div>
               <div class="anim-input-row">
                 <button id="animImgBtn" class="icon-btn" data-tip="Attach reference images (screenshots, sketches, frames). You can also drag and drop images onto the chat.">
                   <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></svg>

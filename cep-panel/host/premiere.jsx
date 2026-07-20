@@ -187,8 +187,20 @@ $.editagent = (function () {
     var gaps = [];
     collectTrackClips(seq.videoTracks, "video", clips, gaps);
     collectTrackClips(seq.audioTracks, "audio", clips, gaps);
+    // Frame size: the modern properties first, then getSettings() for builds
+    // that lack them. A wrong/missing size makes animation renders come out at
+    // the 1920x1080 fallback instead of the sequence's real resolution.
     var fsH = null, fsV = null;
     try { fsH = seq.frameSizeHorizontal; fsV = seq.frameSizeVertical; } catch (eFS) {}
+    if (!fsH || !fsV) {
+      try {
+        var fset = seq.getSettings();
+        if (fset) {
+          if (!fsH) fsH = Number(fset.videoFrameWidth) || null;
+          if (!fsV) fsV = Number(fset.videoFrameHeight) || null;
+        }
+      } catch (eFS2) {}
+    }
     return {
       sequence: {
         name: seq.name,
@@ -512,7 +524,32 @@ $.editagent = (function () {
   function getPlayhead() {
     var seq = requireSeq();
     var t = seq.getPlayerPosition();
-    return { seconds: t.seconds, ticks: String(t.ticks) };
+    // Cheap timeline signature alongside the playhead (the panel polls this
+    // anyway): sequence name + clip counts + content end. Any edit, apply, or
+    // sequence switch changes it, so the panel can auto-resync its lists.
+    // Costs a handful of property reads, never a per-clip loop.
+    var vItems = 0, aItems = 0, endSec = 0, i, n, e;
+    try {
+      for (i = 0; i < seq.videoTracks.numTracks; i++) {
+        n = seq.videoTracks[i].clips.numItems;
+        vItems += n;
+        if (n) { e = seq.videoTracks[i].clips[n - 1].end.seconds; if (e > endSec) endSec = e; }
+      }
+      for (i = 0; i < seq.audioTracks.numTracks; i++) {
+        n = seq.audioTracks[i].clips.numItems;
+        aItems += n;
+        if (n) { e = seq.audioTracks[i].clips[n - 1].end.seconds; if (e > endSec) endSec = e; }
+      }
+    } catch (e2) {}
+    return {
+      seconds: t.seconds,
+      ticks: String(t.ticks),
+      seqName: String(seq.name),
+      vItems: vItems,
+      aItems: aItems,
+      vTracks: seq.videoTracks.numTracks,
+      endSec: Math.round(endSec * 1000) / 1000
+    };
   }
 
   // ---- one-click Undo: restore the timeline to a pre-apply snapshot ----

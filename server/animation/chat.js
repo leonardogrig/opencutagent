@@ -45,7 +45,13 @@ export function toolDetail(name, input = {}) {
 export function buildSystemAppend(job, styleSkill) {
   const durSec = (job.durationInFrames / job.fps).toFixed(2);
   return [
-    "You are the OpenCutAgent animation agent. The user selected a range of their Premiere Pro timeline and is chatting with you (from a small panel chat, not a terminal) to build a silent Remotion animation for it. Be conversational and concise; the user sees your replies as chat bubbles.",
+    "You are the OpenCutAgent animation agent. The user selected a range of their Premiere Pro timeline and is chatting with you (from a small panel chat, not a terminal) to build a silent Remotion animation for it.",
+    "",
+    "Who you are talking to (IMPORTANT): a VIDEO EDITOR, not a developer. They never see your tool calls, only a small status line plus your FINAL message per turn. So:",
+    "- Keep the final message short (2 to 5 sentences), warm, and in plain creative language: describe WHAT the animation shows and when things appear, like a motion designer would.",
+    "- Never include code, file paths, component names, or technical jargon in chat. No markdown headers or bullets of internals.",
+    "- Do all technical narration silently; don't think out loud about files or APIs in your visible text.",
+    "- Work directly in this session: never spawn sub-agents, schedule wakeups, or wait for background work; this turn ends when you stop.",
     "",
     `Your job: ${job.id}`,
     `- Work ONLY inside src/jobs/${job.id}/ (Scene.tsx is yours; brief.md is the assignment; refs/ holds the user's reference images).`,
@@ -55,7 +61,7 @@ export function buildSystemAppend(job, styleSkill) {
     "- You may append a general lesson to the style's Learnings Log (styles/" + job.style + "/SKILL.md) when the user corrects a reusable pattern. Everything else outside your job folder is read-only.",
     "",
     "Finishing protocol (IMPORTANT):",
-    `- When the scene compiles (npx tsc --noEmit) and you're satisfied, write src/jobs/${job.id}/render.json as {"version": N, "notes": "..."} — start at 1 and bump N on every revision that should be re-rendered.`,
+    `- When the scene compiles (npx tsc --noEmit) and you're satisfied, write src/jobs/${job.id}/render.json as {"version": N, "notes": "...", "title": "..."} — start at 1 and bump N on every revision that should be re-rendered. "title" is a short human name for what you built (2 to 3 plain words, 20 characters max, e.g. "Webhook branches") — it labels this animation in the panel.`,
     "- The SERVER watches that file: after your reply it renders the composition and places the clip on the Premiere timeline automatically. Do NOT run `remotion render` for the final yourself, and you have no access to Premiere.",
     "- Stills for self-checking are fine: npx remotion still " + job.id + " src/jobs/" + job.id + "/check.png --frame=N (then view the PNG).",
     "- If you're only answering a question or the scene isn't ready, don't touch render.json.",
@@ -85,6 +91,10 @@ export function runChatTurn({ kitDirPath, job, prompt, styleSkill = "", model, e
       "--include-partial-messages",
       "--permission-mode", "bypassPermissions",
       "--strict-mcp-config",
+      // Core tools only: file work + bash for typecheck/stills. No Task/Agent or
+      // scheduling — a -p turn that "waits for a background agent" waits forever
+      // (seen live: the agent spawned a survey sub-agent + a wakeup on turn one).
+      "--tools", "Bash,Read,Write,Edit,Glob,Grep",
       job.sessionId ? "--resume" : "--session-id", sessionId,
       "--append-system-prompt", buildSystemAppend(job, styleSkill),
     ];

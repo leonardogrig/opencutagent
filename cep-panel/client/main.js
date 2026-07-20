@@ -198,6 +198,8 @@
       // Learn whether an ElevenLabs key is configured, so a transcription
       // attempt without one opens the key modal instead of failing.
       AI.refreshKey();
+      // A previously-transcribed project loads by itself, from cache, for free.
+      Retake.autoLoad();
       if (activeTab === "retake") Retake.onShow(); // resume playhead sync after a reconnect
       else if (activeTab === "silence") Silence.onShow();
       else if (activeTab === "anim") Anim.onShow();
@@ -205,8 +207,9 @@
     ws.onmessage = handleMessage;
     ws.onclose = function () {
       failRpc("Disconnected from server.");
-      Retake.onHide(); // stop the playhead poll while offline
+      Retake.onHide(); // stop the playhead polls while offline
       Silence.onHide();
+      Anim.onHide();
       updateAllButtons();
       // The panel is just a client — if nothing is serving the port, start the
       // Node server ourselves so "open the extension" is all the user needs.
@@ -1554,6 +1557,8 @@
       currentIndex: null,    // segment index currently under the playhead
       pollTimer: null, pollInFlight: false,
       mapRefreshAt: 0, mapRefreshing: false,
+      // timeline-change detection (cheap signature piggybacked on the playhead poll):
+      pendingSig: null, sigStable: 0, loadedSig: null,
     };
     var POLL_MS = 300, MAP_LAZY_MS = 4000;
     var expanded = {};
@@ -1571,22 +1576,38 @@
     function setStatus(text, isErr) { el.statusbar.textContent = text || ""; el.statusbar.className = "statusbar" + (isErr ? " err" : ""); }
     function setBusy(b) { state.busy = b; updateButtons(); }
 
-    function loadSegments() {
-      // Transcription needs an ElevenLabs key — if we know there isn't one,
-      // open the key modal instead of letting the load fail with an .env error.
-      if (connected() && AI.keyMissing()) { AI.openKeyModal("Loading segments transcribes the timeline with ElevenLabs. Add your API key below, then click Load segments again."); return; }
+    // Take a (re)built segment list from the server into the panel. Shared by
+    // the explicit Load button, the silent auto-load, and the timeline resync.
+    function adoptReview(res, note) {
+      state.segments = res.segments || [];
+      state.liveMap = {}; // indexes are fresh; a stale map would mislabel rows until refreshMap lands
+      state.loaded = true; expanded = {}; groupExpanded = {};
+      state.loadedSig = state.pendingSig || null; // re-baseline the change detector
+      var fr = res.fragments || {};
+      var extra = (fr.autoCut ? " · " + fr.autoCut + " pop(s) auto-cut" : "") + (fr.flagged ? " · " + fr.flagged + " flagged" : "");
+      setStatus(state.segments.length + " segments loaded" + (note ? " " + note : "") + extra + (res.skipped && res.skipped.length ? " (" + res.skipped.length + " clip(s) skipped)" : ""));
+      setLabel(el.loadBtn, "Reload");
+      render();
+      refreshMap(true); // reconcile positions for playhead-sync + re-insert state
+      Anim.onSegments(); // the Animation tab's picker shares this list
+    }
+    // Silent, cost-free load: the server builds segments only if the transcript
+    // cache fully covers the current timeline (never bills, needs no key). Runs
+    // on connect and when the tab opens, so a known project appears by itself.
+    function autoLoad() {
+      if (!connected() || state.busy || state.loaded) return;
+      callServer("autoLoadSegments", { transcribe_model: AI.sttModel() }).then(
+        function (res) { if (res && res.loaded) adoptReview(res, "from cache"); },
+        function () { /* silent: the Load button remains the explicit path */ }
+      );
+    }
+    function loadSegments(fresh) {
       setBusy(true); setStatus("Loading…"); setLoading(el.loadBtn, true, "Loading…");
       el.segments.innerHTML = skeletonRows();
-      callServer("loadSegments", { transcribe_model: AI.sttModel() }, function (m) { setStatus(m); }).then(
+      callServer("loadSegments", { transcribe_model: AI.sttModel(), fresh: fresh === true }, function (m) { setStatus(m); }).then(
         function (res) {
-          state.segments = res.segments || [];
-          state.liveMap = {}; // indexes are fresh; a stale map would mislabel rows until refreshMap lands
-          state.loaded = true; expanded = {}; groupExpanded = {};
-          var fr = res.fragments || {};
-          var extra = (fr.autoCut ? " · " + fr.autoCut + " pop(s) auto-cut" : "") + (fr.flagged ? " · " + fr.flagged + " flagged" : "");
-          setStatus(state.segments.length + " segments loaded" + extra + (res.skipped && res.skipped.length ? " (" + res.skipped.length + " clip(s) skipped)" : ""));
-          setLoading(el.loadBtn, false, "Reload"); render(); setBusy(false);
-          refreshMap(true); // reconcile positions for playhead-sync + re-insert state
+          setLoading(el.loadBtn, false, "Reload"); setBusy(false);
+          adoptReview(res, "");
         },
         function (err) {
           var cancelled = /cancel/i.test(err.message);
@@ -1606,9 +1627,9 @@
         return;
       }
       // Headless (default): Claude analyzes here and pushes the marks for review.
+      // (No key pre-check: a fully cached timeline transcribes for free; if new
+      // footage really needs the key, the server's error opens the key modal.)
       if (!connected()) { setStatus("Not connected.", true); return; }
-      // Analyzing an unloaded timeline transcribes first, which needs the key.
-      if (!state.loaded && AI.keyMissing()) { AI.openKeyModal("Analyzing transcribes the timeline with ElevenLabs first. Add your API key below, then click Analyze again."); return; }
       setBusy(true); setStatus("Claude is analyzing the retakes…"); setLoading(el.aiBtn, true, "Analyzing…");
       callServer("aiRetakes", AI.params(), function (m) { setStatus(m); }).then(
         function (res) {
@@ -1745,7 +1766,7 @@
     }
     function markUndoable() { state.undoAvailable = true; updateButtons(); }
     function clearUndoable() { state.undoAvailable = false; updateButtons(); }
-    function startOver() { if (state.busy) return; loadSegments(); }
+    function startOver() { if (state.busy) return; loadSegments(true); } // fresh:true really wipes the marks
 
     /* ----- playhead sync + live reconciliation (shared by highlight + re-insert) ----- */
     function setMap(arr) {
@@ -1794,12 +1815,39 @@
       state.pollInFlight = true;
       callHostDirect("getPlayhead", {}, function (r) {
         state.pollInFlight = false;
-        if (r && r.status === "OK" && r.result && r.result.seconds != null) updateHighlight(r.result.seconds);
+        if (r && r.status === "OK" && r.result && r.result.seconds != null) {
+          updateHighlight(r.result.seconds);
+          trackSignature(r.result);
+        }
       });
+    }
+    // Auto-resync: getPlayhead piggybacks a cheap timeline signature (sequence
+    // name + clip counts + content end). When it changes and settles, the list
+    // is stale, so we rebuild it from cache with the marks carried over. If the
+    // edit exposed untranscribed footage, we say so instead of silently billing.
+    function trackSignature(res) {
+      if (res.seqName == null) return; // host script predates the signature
+      var sig = res.seqName + "|" + res.vItems + "|" + res.aItems + "|" + res.endSec;
+      if (state.pendingSig !== sig) { state.pendingSig = sig; state.sigStable = 0; return; }
+      if (state.sigStable < 3) state.sigStable++;
+      if (state.sigStable < 2 || !state.loaded || state.busy) return; // wait until the edit settles (~0.6s)
+      if (state.loadedSig == null) { state.loadedSig = sig; return; } // first stable look = the baseline
+      if (sig !== state.loadedSig) { state.loadedSig = sig; resync(); }
+    }
+    function resync() {
+      if (!connected() || state.busy) return;
+      setStatus("Timeline changed. Updating…");
+      callServer("autoLoadSegments", { transcribe_model: AI.sttModel() }).then(
+        function (res) {
+          if (res && res.loaded) adoptReview(res, "(timeline changed)");
+          else { setStatus("Timeline changed. Click Reload to transcribe the new parts."); refreshMap(true); }
+        },
+        function () { refreshMap(true); }
+      );
     }
     function startPoll() { if (state.pollTimer) clearInterval(state.pollTimer); state.pollTimer = setInterval(pollTick, POLL_MS); }
     function stopPoll() { if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; } }
-    function onShow() { if (state.loaded) refreshMap(true); startPoll(); }
+    function onShow() { if (state.loaded) refreshMap(true); else autoLoad(); startPoll(); }
     function onHide() {
       stopPoll();
       state.currentIndex = null;
@@ -2008,7 +2056,7 @@
         else if (act === "toggle") { s.decision = s.decision === "cut" ? "keep" : "cut"; s.manual = true; if (s.decision === "cut") s.protected = false; render(); }
         else if (act === "protect") { s.protected = !s.protected; s.manual = true; if (s.protected) s.decision = "keep"; render(); }
       });
-      el.loadBtn.addEventListener("click", loadSegments);
+      el.loadBtn.addEventListener("click", function () { loadSegments(false); });
       el.aiBtn.addEventListener("click", analyze);
       el.retakeStopBtn.addEventListener("click", stop);
       el.applyBtn.addEventListener("click", applyAll);
@@ -2032,6 +2080,7 @@
     return {
       wire: wire, updateButtons: updateButtons, applyReviewUpdate: applyReviewUpdate, setMap: setMap,
       markUndoable: markUndoable, clearUndoable: clearUndoable, onShow: onShow, onHide: onHide, refreshMap: refreshMap,
+      autoLoad: autoLoad,
       segments: function () { return state.segments; },
       liveMap: function () { return state.liveMap; },
       isLoaded: function () { return state.loaded; },
@@ -2050,19 +2099,26 @@
     var state = {
       styles: [], stylesLoaded: false,
       style: "excalidraw", background: "solid",
+      track: "1",           // 0-based video track for placement ("1" = V2), fixed per job at creation
       jobs: [], stateLoaded: false,
       activeJobId: null,
       selection: [], anchor: null,
       busy: false,          // a create / chat turn / render is in flight
       pendingImgs: [],      // [{name, data(base64)}] queued for the next message
-      liveText: null,       // the streaming assistant bubble's text node
-      liveMsg: null,        // the streaming assistant bubble element
+      turnRendered: false,  // the current turn's reply bubble has been appended
+      confirmDel: null,     // job id whose delete button is in its "Sure?" state
+      // playhead follow (picker mode only):
+      follow: true, pollTimer: null, pollInFlight: false, currentIndex: null,
+      vTracks: null,        // the sequence's real video track count (from the playhead poll)
+      activityEl: null, activityText: null, // the in-chat "working" bubble (one at most)
     };
+    var POLL_MS = 300;
     var el = {};
 
     function cache() {
-      ["animStyle", "animBgCtl", "animBackBtn", "animSelect", "animStatus", "animJobs", "animSegs",
-       "animSelSummary", "animCreateBtn", "animChatWrap", "animJobInfo", "animChatLog", "animChatStatus",
+      ["animStyle", "animStyleWrap", "animBgCtl", "animTrack", "animTrackWrap", "animFollow", "animBackBtn",
+       "animSelect", "animStatus", "animJobs", "animSegs",
+       "animSelSummary", "animCreateBtn", "animChatWrap", "animJobInfo", "animChatLog",
        "animAttach", "animText", "animSendBtn", "animStopBtn", "animImgBtn", "animFile"]
         .forEach(function (id) { el[id] = $(id); });
     }
@@ -2070,16 +2126,91 @@
       try {
         state.style = window.localStorage.getItem("editagent.anim.style") || "excalidraw";
         state.background = window.localStorage.getItem("editagent.anim.bg") === "transparent" ? "transparent" : "solid";
+        state.track = window.localStorage.getItem("editagent.anim.track") || "1";
+        state.follow = window.localStorage.getItem("editagent.anim.follow") !== "0";
       } catch (e) {}
     }
     function persistPrefs() {
       try {
         window.localStorage.setItem("editagent.anim.style", state.style);
         window.localStorage.setItem("editagent.anim.bg", state.background);
+        window.localStorage.setItem("editagent.anim.track", state.track);
+        window.localStorage.setItem("editagent.anim.follow", state.follow ? "1" : "0");
       } catch (e) {}
     }
     function setStatus(text, isErr) { el.animStatus.textContent = text || ""; el.animStatus.className = "statusbar" + (isErr ? " err" : ""); }
-    function setChatStatus(text) { el.animChatStatus.textContent = text || ""; }
+    // "2m ago" / "3d ago" for the animations list.
+    function fmtAgo(ts) {
+      if (!ts) return "";
+      var s = Math.max(0, (Date.now() - ts) / 1000);
+      if (s < 60) return "just now";
+      if (s < 3600) return Math.round(s / 60) + " min ago";
+      if (s < 86400) return Math.round(s / 3600) + " h ago";
+      return Math.round(s / 86400) + " d ago";
+    }
+    // Reveal the job's folder (chat, renders, sources) in Finder / Explorer.
+    function openFolder(dir) {
+      if (!dir) return;
+      try {
+        var cp = require("child_process"), os = require("os");
+        var isWin = os.platform() === "win32";
+        cp.spawn(isWin ? "explorer" : "open", [dir], { stdio: "ignore" });
+      } catch (e) {
+        toast("Folder: " + dir, "info"); // outside Premiere (browser QA) just show the path
+      }
+    }
+    // Agent activity lives IN the chat: one self-replacing bubble at the bottom
+    // ("Reading the brief…" -> "Sketching the animation…" -> "Rendering v2: 47%"),
+    // removed when the turn ends. Never stacks.
+    function ensureActivityBubble() {
+      if (state.activityEl && state.activityEl.parentNode) return;
+      var wrap = document.createElement("div");
+      wrap.className = "anim-msg assistant activity";
+      var bubble = document.createElement("div");
+      bubble.className = "anim-bubble";
+      var dot = document.createElement("span");
+      dot.className = "anim-activity-dot";
+      var txt = document.createTextNode("");
+      bubble.appendChild(dot);
+      bubble.appendChild(txt);
+      wrap.appendChild(bubble);
+      el.animChatLog.appendChild(wrap);
+      state.activityEl = wrap;
+      state.activityText = txt;
+    }
+    function removeActivityBubble() {
+      if (state.activityEl && state.activityEl.parentNode) state.activityEl.parentNode.removeChild(state.activityEl);
+      state.activityEl = null;
+      state.activityText = null;
+    }
+    function setChatStatus(text) {
+      if (!text) { removeActivityBubble(); return; }
+      ensureActivityBubble();
+      state.activityText.nodeValue = text;
+      scrollChat();
+    }
+    // New messages slot in ABOVE the activity bubble so it always stays last.
+    function insertChatHtml(html) {
+      if (state.activityEl && state.activityEl.parentNode === el.animChatLog) state.activityEl.insertAdjacentHTML("beforebegin", html);
+      else el.animChatLog.insertAdjacentHTML("beforeend", html);
+      scrollChat();
+    }
+    // The editor never sees raw tool calls; each becomes a friendly one-line status.
+    function friendlyTool(ev) {
+      var d = String(ev.detail || "").toLowerCase();
+      switch (ev.name) {
+        case "Read": return d === "brief.md" ? "Reading the brief and your narration…" : "Reviewing the material…";
+        case "Write":
+        case "Edit": return "Sketching the animation…";
+        case "Bash":
+          if (d.indexOf("still") >= 0 || d.indexOf("preview") >= 0 || d.indexOf("frame") >= 0) return "Rendering a preview frame to check the look…";
+          if (d.indexOf("tsc") >= 0 || d.indexOf("typecheck") >= 0 || d.indexOf("check") >= 0) return "Double-checking everything works…";
+          return "Working…";
+        case "Glob":
+        case "Grep": return "Looking through the project…";
+        default: return "Working…";
+      }
+    }
     function activeJob() { for (var i = 0; i < state.jobs.length; i++) if (state.jobs[i].id === state.activeJobId) return state.jobs[i]; return null; }
 
     /* ---- eligible segments: the loaded transcript minus removed ones ---- */
@@ -2135,8 +2266,17 @@
     }
 
     /* ---- rendering: jobs list, segment picker, chat ---- */
-    function jobBadge(j) {
-      if (j.placed && j.placed.ok) return '<span class="badge keep">On V' + ((j.placed.trackIndex || 1) + 1) + " · v" + esc(j.placed.version) + "</span>";
+    // Placed animations badge with WHERE they live on the timeline (the range);
+    // clicking it (where seekable) takes the playhead there.
+    function jobBadge(j, seekable) {
+      if (j.placed && j.placed.ok && j.placed.targetSeconds != null) {
+        var t0 = j.placed.targetSeconds;
+        var range = mmss(t0) + "–" + mmss(t0 + (j.durationSec || 0));
+        var seek = seekable
+          ? ' data-seek="' + t0 + '" data-tip="Click to move the Premiere playhead to where this animation sits on the timeline."'
+          : "";
+        return '<span class="badge keep' + (seekable ? " seekable" : "") + '"' + seek + ">" + esc(range) + "</span>";
+      }
       if (j.lastRenderedVersion) return '<span class="badge manual">Rendered v' + esc(j.lastRenderedVersion) + "</span>";
       return '<span class="badge frag">Draft</span>';
     }
@@ -2145,15 +2285,32 @@
       var html = '<div class="anim-jobs-title">Animations in this project</div>', i;
       for (i = 0; i < state.jobs.length; i++) {
         var j = state.jobs[i];
+        var confirming = state.confirmDel === j.id;
         html += '<div class="anim-job" data-job="' + esc(j.id) + '">' +
-          '<span class="anim-job-name">' + esc(j.id) + "</span>" +
+          '<span class="anim-job-name">' + esc(j.title || j.id) + "</span>" +
           '<span class="anim-job-meta">' + (j.durationSec != null ? j.durationSec.toFixed(1) + "s" : "") +
-          (j.range ? " · " + mmss(j.range.startSec) + "–" + mmss(j.range.endSec) : "") +
-          " · " + esc(j.background === "transparent" ? "no bg" : "solid") + "</span>" +
+          " · " + esc(j.background === "transparent" ? "no bg" : "solid") +
+          (j.createdAt ? " · " + fmtAgo(j.createdAt) : "") + "</span>" +
           '<span class="seg-badges">' + jobBadge(j) + "</span>" +
+          (confirming
+            ? '<button class="anim-job-x confirm" data-act="del" data-tip="Really delete? The chat leaves this list; a clip already on the timeline stays.">Sure?</button>'
+            : '<button class="anim-job-x" data-act="del" aria-label="Delete animation" data-tip="Delete this animation from the list. A clip it placed stays on the timeline.">×</button>') +
           "</div>";
       }
       el.animJobs.innerHTML = html;
+    }
+    function deleteJob(id) {
+      if (!connected() || state.busy) return;
+      if (state.confirmDel !== id) { state.confirmDel = id; renderJobs(); return; } // two-step confirm
+      state.confirmDel = null;
+      callServer("animDiscard", { jobId: id }).then(
+        function (res) {
+          toast((res && res.message) || "Deleted.", "success");
+          if (state.activeJobId === id) closeJob();
+          refreshState();
+        },
+        function (err) { toast(err.message, "error"); refreshState(); }
+      );
     }
     function renderSegs() {
       var loaded = Retake.isLoaded();
@@ -2168,7 +2325,8 @@
       }
       var selSet = {}, i;
       for (i = 0; i < state.selection.length; i++) selSet[state.selection[i]] = 1;
-      var html = '<div class="anim-hint">Click a segment to start a selection, then click neighbors (or shift-click) to extend it. The animation covers the whole selected run.</div>';
+      var html = '<div class="anim-picker-title">Pick segments to animate</div>' +
+        '<div class="anim-hint">Click a segment to start a selection, then click neighbors (or shift-click) to extend it. The animation covers the whole selected run.</div>';
       for (i = 0; i < segs.length; i++) {
         var s = segs[i];
         var t = segTimes(s);
@@ -2206,13 +2364,28 @@
         inputs[i].parentNode.className = "segopt" + (inputs[i].checked ? " on" : "");
       }
     }
-
-    /* ---- chat rendering ---- */
-    function scrollChat() { try { el.animChatLog.scrollTop = el.animChatLog.scrollHeight; } catch (e) {} }
-    function chipHtml(t) {
-      return '<span class="anim-chip"><svg class="ic ic-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg>' +
-        esc(t.name) + (t.detail ? '<span class="anim-chip-d">' + esc(t.detail) + "</span>" : "") + "</span>";
+    // The Track select mirrors the sequence's REAL tracks (V1..Vn, playhead-poll
+    // fed) plus one new track above them; before the first poll it falls back to
+    // a generic V1..V6 so the control is never empty.
+    function renderTrackOptions() {
+      var n = state.vTracks != null && state.vTracks > 0 ? state.vTracks : null;
+      var count = n != null ? n : 6;
+      var html = "", i;
+      for (i = 0; i < count; i++) html += '<option value="' + i + '">V' + (i + 1) + "</option>";
+      if (n != null) html += '<option value="' + n + '">V' + (n + 1) + " (new)</option>";
+      el.animTrack.innerHTML = html;
+      var max = n != null ? n : count - 1;
+      var cur = parseInt(state.track, 10);
+      if (!(cur >= 0 && cur <= max)) cur = Math.min(1, max);
+      state.track = String(cur);
+      el.animTrack.value = state.track;
     }
+
+    /* ---- chat rendering ----
+     * Editors see a clean conversation: their messages, the agent's FINAL reply
+     * per turn, and system notices. Tool calls and intermediate narration are
+     * abstracted into the single status line above the composer. */
+    function scrollChat() { try { el.animChatLog.scrollTop = el.animChatLog.scrollHeight; } catch (e) {} }
     function msgHtml(m) {
       if (m.role === "user") {
         return '<div class="anim-msg user"><div class="anim-bubble">' + esc(m.text) +
@@ -2220,25 +2393,26 @@
           "</div></div>";
       }
       if (m.role === "assistant") {
-        var chips = "";
-        if (m.tools && m.tools.length) {
-          var i; chips = '<div class="anim-chips">';
-          for (i = 0; i < m.tools.length; i++) chips += chipHtml(m.tools[i]);
-          chips += "</div>";
-        }
-        return '<div class="anim-msg assistant">' + chips + '<div class="anim-bubble">' + esc(m.text) + "</div></div>";
+        return '<div class="anim-msg assistant"><div class="anim-bubble">' + esc(m.text) + "</div></div>";
       }
-      // system notices (created / placed / errors)
+      // system notices (created / placed / errors); a placed notice seeks on click
+      if (m.kind === "placed" && m.targetSeconds != null) {
+        return '<div class="anim-msg system placed" data-seek="' + m.targetSeconds + '" data-tip="Click to move the Premiere playhead to where this animation starts."><span>' + esc(m.text) + " Click to view.</span></div>";
+      }
       return '<div class="anim-msg system"><span>' + esc(m.text) + "</span></div>";
     }
     function renderChat() {
       var job = activeJob();
       if (!job) return;
       el.animJobInfo.innerHTML =
-        '<span class="anim-job-name">' + esc(job.id) + "</span>" +
-        '<span class="anim-job-meta">' + job.durationSec.toFixed(1) + "s · " + mmss(job.range.startSec) + "–" + mmss(job.range.endSec) +
-        " · " + esc(job.background === "transparent" ? "no bg" : "solid bg") + " · " + esc(job.style) + "</span>" +
-        '<span class="seg-badges">' + jobBadge(job) + "</span>";
+        '<span class="anim-job-name">' + esc(job.title || job.id) + "</span>" +
+        '<span class="anim-job-meta">' + job.durationSec.toFixed(1) + "s · " +
+        esc(job.background === "transparent" ? "no bg" : "solid bg") + " · " + esc(job.style) + "</span>" +
+        '<span class="seg-badges">' + jobBadge(job, true) + "</span>" +
+        (job.outDir
+          ? '<button class="icon-btn anim-folder" data-act="folder" aria-label="Open the animation folder" data-tip="Opens this animation\'s folder (chat, rendered clips, sources) next to your Premiere project.">' +
+            '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg></button>'
+          : "");
       var html = "", i;
       var chat = job.chat || [];
       for (i = 0; i < chat.length; i++) html += msgHtml(chat[i]);
@@ -2246,40 +2420,26 @@
         html += '<div class="anim-msg system"><span>Tell the agent what to build for this narration. It knows the transcript and the exact duration; attach reference images if it helps.</span></div>';
       }
       el.animChatLog.innerHTML = html;
-      state.liveMsg = null; state.liveText = null;
+      state.activityEl = null; state.activityText = null; // wiped with the log
+      if (state.busy) setChatStatus("Working…"); // a rebuild mid-turn keeps the live bubble
       scrollChat();
     }
     function appendUserBubble(text, imgs) {
-      el.animChatLog.insertAdjacentHTML("beforeend", msgHtml({ role: "user", text: text, images: imgs.map(function (im) { return im.name; }) }));
-      scrollChat();
+      insertChatHtml(msgHtml({ role: "user", text: text, images: imgs.map(function (im) { return im.name; }) }));
     }
-    function appendSystemBubble(text, isErr) {
-      el.animChatLog.insertAdjacentHTML("beforeend", '<div class="anim-msg system' + (isErr ? " err" : "") + '"><span>' + esc(text) + "</span></div>");
-      scrollChat();
-    }
-    // The streaming assistant bubble: deltas append into a text node; tool chips
-    // collect above it. Created lazily so a reconnect mid-turn still renders.
-    function ensureLiveBubble() {
-      if (state.liveMsg && state.liveMsg.parentNode) return;
-      var wrap = document.createElement("div");
-      wrap.className = "anim-msg assistant live";
-      var chips = document.createElement("div"); chips.className = "anim-chips"; chips.style.display = "none";
-      var bubble = document.createElement("div"); bubble.className = "anim-bubble";
-      var textNode = document.createTextNode("");
-      bubble.appendChild(textNode);
-      wrap.appendChild(chips); wrap.appendChild(bubble);
-      el.animChatLog.appendChild(wrap);
-      state.liveMsg = wrap; state.liveText = textNode;
-    }
-    function finishLiveBubble(finalText) {
-      if (state.liveMsg) {
-        state.liveMsg.className = "anim-msg assistant";
-        if (finalText != null && state.liveText && !state.liveText.nodeValue.trim()) state.liveText.nodeValue = finalText;
-        if (state.liveText && !state.liveText.nodeValue.trim() && state.liveMsg.querySelector(".anim-chips").style.display === "none") {
-          state.liveMsg.parentNode.removeChild(state.liveMsg); // nothing arrived — drop the empty bubble
-        }
+    function appendSystemBubble(text, isErr, seekSec) {
+      if (seekSec != null) {
+        insertChatHtml('<div class="anim-msg system placed" data-seek="' + seekSec + '" data-tip="Click to move the Premiere playhead to where this animation starts."><span>' + esc(text) + " Click to view.</span></div>");
+      } else {
+        insertChatHtml('<div class="anim-msg system' + (isErr ? " err" : "") + '"><span>' + esc(text) + "</span></div>");
       }
-      state.liveMsg = null; state.liveText = null;
+    }
+    // The agent's reply for the CURRENT turn is appended exactly once, whether
+    // it arrives via the assistantDone push or the RPC result (reconnect races).
+    function appendAssistantReply(text) {
+      if (state.turnRendered || !text || !String(text).trim()) return;
+      state.turnRendered = true;
+      insertChatHtml(msgHtml({ role: "assistant", text: text }));
     }
 
     /* ---- attachments ---- */
@@ -2343,7 +2503,11 @@
       el.animSelect.className = "hidden";
       el.animChatWrap.className = "anim-chatwrap";
       el.animBackBtn.style.display = "";
-      el.animStyle.disabled = true;
+      // Style/background/track are fixed at creation — inside a chat they're just noise.
+      el.animStyleWrap.style.display = "none";
+      el.animBgCtl.style.display = "none";
+      el.animTrackWrap.style.display = "none";
+      stopPoll(); // no segment list to highlight in chat mode
       renderChat();
       updateButtons();
       try { el.animText.focus(); } catch (e) {}
@@ -2353,9 +2517,12 @@
       el.animChatWrap.className = "anim-chatwrap hidden";
       el.animSelect.className = "";
       el.animBackBtn.style.display = "none";
-      el.animStyle.disabled = false;
+      el.animStyleWrap.style.display = "";
+      el.animBgCtl.style.display = "";
+      el.animTrackWrap.style.display = "";
       setChatStatus("");
       renderSegs(); renderJobs(); updateButtons();
+      if (activeTab === "anim") startPoll();
     }
     function create() {
       if (!connected() || state.busy || !state.selection.length) return;
@@ -2363,7 +2530,7 @@
       setLoading(el.animCreateBtn, true, "Creating…");
       setStatus("Creating the animation…");
       var p = AI.params();
-      callServer("animCreate", { segments: state.selection, style: state.style, background: state.background, model: p.model, effort: p.effort }, function (m) { setStatus(m); }).then(
+      callServer("animCreate", { segments: state.selection, style: state.style, background: state.background, track: parseInt(state.track, 10), model: p.model, effort: p.effort }, function (m) { setStatus(m); }).then(
         function (res) {
           state.busy = false;
           setLoading(el.animCreateBtn, false, "Start animation chat");
@@ -2388,18 +2555,17 @@
       if (!connected() || state.busy || !state.activeJobId) return;
       if (!text && !state.pendingImgs.length) return;
       var jobId = state.activeJobId;
-      state.busy = true; updateButtons();
+      state.busy = true; state.turnRendered = false; updateButtons();
       appendUserBubble(text, state.pendingImgs);
       var images = state.pendingImgs;
       state.pendingImgs = []; renderAttach();
       el.animText.value = "";
-      setChatStatus("Thinking…");
-      ensureLiveBubble();
+      setChatStatus("Thinking…", true);
       var p = AI.params();
-      callServer("animChat", { jobId: jobId, text: text, images: images, model: p.model, effort: p.effort }, function (m) { setChatStatus(m); }).then(
+      callServer("animChat", { jobId: jobId, text: text, images: images, model: p.model, effort: p.effort }, function (m) { setChatStatus(m, true); }).then(
         function (res) {
           state.busy = false;
-          finishLiveBubble(res && res.text);
+          if (res) appendAssistantReply(res.text); // no-op if the assistantDone push already did
           setChatStatus("");
           if (res && res.placed) toast(res.placed, "success");
           refreshState(); // pick up the persisted chat + placed/render state
@@ -2407,7 +2573,6 @@
         },
         function (err) {
           state.busy = false;
-          finishLiveBubble(null);
           setChatStatus("");
           var cancelled = /cancel/i.test(err.message);
           appendSystemBubble(cancelled ? "Stopped." : err.message, !cancelled);
@@ -2428,30 +2593,74 @@
       }
       var ev = msg.event || {};
       if (ev.kind === "delta") {
-        ensureLiveBubble();
-        state.liveText.nodeValue += ev.text || "";
-        scrollChat();
+        // Intermediate narration is developer noise; editors see the status line
+        // and the final reply only.
+        return;
       } else if (ev.kind === "tool") {
-        ensureLiveBubble();
-        var chips = state.liveMsg.querySelector(".anim-chips");
-        chips.style.display = "";
-        chips.insertAdjacentHTML("beforeend", chipHtml(ev));
-        scrollChat();
+        setChatStatus(friendlyTool(ev), true);
       } else if (ev.kind === "status") {
-        setChatStatus(ev.text || "");
+        setChatStatus(ev.text || "", true);
       } else if (ev.kind === "placed") {
-        appendSystemBubble(ev.text || "Placed on the timeline.");
+        appendSystemBubble(ev.text || "Animation placed on the timeline.", false, ev.targetSeconds);
         setChatStatus("");
       } else if (ev.kind === "assistantDone") {
-        finishLiveBubble(ev.text);
+        appendAssistantReply(ev.text);
+        setChatStatus("Finishing up…", true);
       } else if (ev.kind === "turnDone") {
         setChatStatus("");
       }
     }
     // Segments changed (reviewUpdate push): the picker's rows may be stale.
     function onSegments() {
-      state.selection = []; state.anchor = null;
+      state.selection = []; state.anchor = null; state.currentIndex = null;
       if (activeTab === "anim" && !state.activeJobId) { renderSegs(); updateButtons(); }
+    }
+
+    /* ---- playhead follow (picker mode): highlight the segment being heard ---- */
+    function updateAnimHighlight(sec) {
+      var lm = Retake.liveMap() || {};
+      var segs = eligible();
+      var found = null, i, m, s0, e0;
+      for (i = 0; i < segs.length; i++) {
+        m = lm[segs[i].index];
+        s0 = m && m.s != null ? m.s : segs[i].startSec;
+        e0 = m && m.e != null ? m.e : segs[i].endSec;
+        if (sec >= s0 && sec < e0) { found = segs[i].index; break; }
+      }
+      if (found === state.currentIndex) return;
+      var prev = el.animSegs.querySelector(".seg.current");
+      if (prev) prev.classList.remove("current");
+      state.currentIndex = found;
+      if (found == null) return;
+      var row = el.animSegs.querySelector('.seg[data-i="' + found + '"]');
+      if (!row) return;
+      row.classList.add("current");
+      if (state.follow) {
+        var r = row.getBoundingClientRect(), cr = el.animSegs.getBoundingClientRect();
+        if (r.top < cr.top || r.bottom > cr.bottom) row.scrollIntoView({ block: "nearest" });
+      }
+    }
+    function pollTick() {
+      if (activeTab !== "anim" || !connected() || state.activeJobId || state.busy || hostBusy() || state.pollInFlight) return;
+      state.pollInFlight = true;
+      callHostDirect("getPlayhead", {}, function (r) {
+        state.pollInFlight = false;
+        if (r && r.status === "OK" && r.result && r.result.seconds != null) {
+          if (Retake.isLoaded()) updateAnimHighlight(r.result.seconds);
+          // Keep the Track select honest about the sequence's real tracks.
+          if (r.result.vTracks != null && r.result.vTracks !== state.vTracks) {
+            state.vTracks = r.result.vTracks;
+            renderTrackOptions();
+          }
+        }
+      });
+    }
+    function startPoll() { if (state.pollTimer) clearInterval(state.pollTimer); state.pollTimer = setInterval(pollTick, POLL_MS); }
+    function stopPoll() {
+      if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
+      state.currentIndex = null;
+      var prev = el.animSegs ? el.animSegs.querySelector(".seg.current") : null;
+      if (prev) prev.classList.remove("current");
     }
 
     function updateButtons() {
@@ -2464,6 +2673,7 @@
       el.animStopBtn.style.display = state.busy && state.activeJobId ? "" : "none";
       el.animImgBtn.disabled = state.busy;
       el.animStyle.disabled = !!state.activeJobId;
+      el.animTrack.disabled = !!state.activeJobId || state.busy;
       var inputs = el.animBgCtl.querySelectorAll("input"), i;
       for (i = 0; i < inputs.length; i++) inputs[i].disabled = !!state.activeJobId || state.busy;
       updateSelSummary();
@@ -2473,8 +2683,9 @@
       syncBgCtl();
       refreshState();
       updateButtons();
+      startPoll();
     }
-    function onHide() { /* nothing to stop — chat pushes are cheap and keyed to the open job */ }
+    function onHide() { stopPoll(); /* chat pushes are cheap and keyed to the open job */ }
 
     function wire() {
       cache();
@@ -2488,15 +2699,37 @@
         toggleSelect(parseInt(row.getAttribute("data-i"), 10), ev.shiftKey);
       });
       el.animJobs.addEventListener("click", function (ev) {
+        var del = ev.target.closest ? ev.target.closest('[data-act="del"]') : null;
         var row = ev.target.closest ? ev.target.closest(".anim-job") : null;
+        if (del && row) { deleteJob(row.getAttribute("data-job")); return; }
+        if (state.confirmDel) { state.confirmDel = null; renderJobs(); } // clicking elsewhere backs out of "Sure?"
         if (row) openJob(row.getAttribute("data-job"));
       });
+      // Chat-header actions: the folder button reveals the job's files; anything
+      // carrying data-seek ("Placed on V2 at 0:41" notices, the V2 badge) moves
+      // the Premiere playhead to the animation's start.
+      function seekClick(ev) {
+        var f = ev.target.closest ? ev.target.closest('[data-act="folder"]') : null;
+        if (f) { var job = activeJob(); if (job) openFolder(job.outDir); return; }
+        var t = ev.target.closest ? ev.target.closest("[data-seek]") : null;
+        if (!t) return;
+        var sec = parseFloat(t.getAttribute("data-seek"));
+        if (!isFinite(sec)) return;
+        callHostDirect("setPlayhead", { seconds: sec });
+        toast("Playhead moved to " + mmss(sec), "info");
+      }
+      el.animChatLog.addEventListener("click", seekClick);
+      el.animJobInfo.addEventListener("click", seekClick);
       el.animStyle.addEventListener("change", function () { state.style = el.animStyle.value; persistPrefs(); });
       el.animBgCtl.addEventListener("change", function () {
         var checked = el.animBgCtl.querySelector("input:checked");
         state.background = checked && checked.value === "transparent" ? "transparent" : "solid";
         persistPrefs(); syncBgCtl();
       });
+      renderTrackOptions();
+      el.animTrack.addEventListener("change", function () { state.track = el.animTrack.value; persistPrefs(); });
+      el.animFollow.checked = state.follow;
+      el.animFollow.addEventListener("change", function () { state.follow = el.animFollow.checked; persistPrefs(); });
       el.animCreateBtn.addEventListener("click", create);
       el.animBackBtn.addEventListener("click", closeJob);
       el.animSendBtn.addEventListener("click", send);

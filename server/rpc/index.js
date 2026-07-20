@@ -61,20 +61,46 @@ async function applySilences(params, helpers, ctx) {
   );
 }
 
-/** Transcribe the timeline into reviewable segments (default: keep). */
+function reviewResult(review) {
+  return {
+    sequence: review.sequence,
+    frameRate: review.frameRate,
+    dropFrame: review.dropFrame,
+    segments: review.segments,
+    skipped: review.skipped,
+    fragments: review.fragments,
+  };
+}
+
+/**
+ * Transcribe the timeline into reviewable segments. Reload keeps the user's
+ * Keep/Cut/Protected marks (carried onto the new tiling by source overlap);
+ * Start Over sends fresh:true to really wipe them.
+ */
 async function loadSegments(params, helpers, ctx) {
   return cancellable(ctx, async () => {
-    const review = await buildReview(ctx, { clipId: params.clip_id, refresh: !!params.refresh, transcribeModel: params.transcribe_model }, helpers.progress);
+    const review = await buildReview(ctx, { clipId: params.clip_id, refresh: !!params.refresh, transcribeModel: params.transcribe_model, carryMarks: params.fresh !== true }, helpers.progress);
     helpers.progress(`Found ${review.segments.length} segments.`);
-    return {
-      sequence: review.sequence,
-      frameRate: review.frameRate,
-      dropFrame: review.dropFrame,
-      segments: review.segments,
-      skipped: review.skipped,
-      fragments: review.fragments,
-    };
+    return reviewResult(review);
   });
+}
+
+/**
+ * The panel's silent auto-load/resync: build segments from the CURRENT timeline
+ * using only what's already cached — never bills ElevenLabs, never needs a key.
+ * Anything not fully covered (or any other hiccup) returns {loaded:false} and
+ * the explicit Load button stays the paid path. Marks always carry over.
+ */
+async function autoLoadSegments(params, helpers, ctx) {
+  if (ctx.panelOp) return { loaded: false, reason: "busy" };
+  try {
+    return await cancellable(ctx, async () => {
+      const review = await buildReview(ctx, { transcribeModel: params.transcribe_model, cacheOnly: true, carryMarks: true }, helpers.progress);
+      return { loaded: true, ...reviewResult(review) };
+    });
+  } catch (e) {
+    return { loaded: false, reason: e.message, code: e.code || null };
+  }
 }
 
 /**
@@ -570,7 +596,7 @@ async function ping() {
   return { ok: true };
 }
 
-const HANDLERS = { ping, cancel, loadSegments, applyDecisions, softApply, clearMarkers, exportTranscript, timelineMap, reinsertSegment, analyzeLevels, applySilences, aiThreshold, aiRetakes, undoLastApply, undoStatus, cacheInfo, clearCache, usageLog, keyStatus, setApiKey, envList, setEnv, ...animHandlers };
+const HANDLERS = { ping, cancel, loadSegments, autoLoadSegments, applyDecisions, softApply, clearMarkers, exportTranscript, timelineMap, reinsertSegment, analyzeLevels, applySilences, aiThreshold, aiRetakes, undoLastApply, undoStatus, cacheInfo, clearCache, usageLog, keyStatus, setApiKey, envList, setEnv, ...animHandlers };
 
 export function createRpcDispatcher(ctx) {
   return async (method, params, helpers) => {
