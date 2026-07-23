@@ -198,6 +198,8 @@
       // Learn whether an ElevenLabs key is configured, so a transcription
       // attempt without one opens the key modal instead of failing.
       AI.refreshKey();
+      // Cloud vs self-hosted mode + account state for the settings popover.
+      AI.refreshCloud();
       // A previously-transcribed project loads by itself, from cache, for free.
       Retake.autoLoad();
       if (activeTab === "retake") Retake.onShow(); // resume playhead sync after a reconnect
@@ -366,7 +368,7 @@
    *  to the Claude Code chat (MCP). Choices persist in localStorage.
    * ================================================================ */
   var AI = (function () {
-    var st = { sync: false, model: "latest", effort: "high" };
+    var st = { sync: false, model: "latest", effort: "high", cloud: { mode: "cloud", signedIn: false, email: null, plan: null, usageText: "" } };
     var el = {};
     var confirmingClear = false;
     function load() {
@@ -397,10 +399,13 @@
       if (el.aiEffort.value !== st.effort) { st.effort = el.aiEffort.value || "high"; persist(); el.aiEffort.value = st.effort; }
       el.sttModel.value = st.sttModel;
       if (el.sttModel.value !== st.sttModel) { st.sttModel = el.sttModel.value || "scribe_v2"; persist(); el.sttModel.value = st.sttModel; }
-      el.aiCtls.className = "pop-group" + (st.sync ? " off" : ""); // model/effort irrelevant in sync mode
-      if (el.aiHint) el.aiHint.textContent = st.sync
-        ? "Paired with your Claude Code chat over MCP. Ask Claude to edit the timeline in chat (for example “cut the retakes”) and the results appear here for review."
-        : "The “Suggest threshold” and “Analyze w/ Claude” buttons run Claude headlessly here, on your Claude subscription. Turn on Sync to drive OpenCutAgent from a Claude Code chat instead.";
+      var cloudActive = st.cloud.mode !== "self";
+      el.aiCtls.className = "pop-group" + (st.sync && !cloudActive ? " off" : ""); // model/effort irrelevant in sync mode
+      if (el.aiHint) el.aiHint.textContent = cloudActive
+        ? "The “Suggest threshold” and “Analyze w/ Claude” buttons run on your OpenCutAgent account (Haiku is cheaper against your quota; everything else runs on the Sonnet tier)."
+        : (st.sync
+          ? "Paired with your Claude Code chat over MCP. Ask Claude to edit the timeline in chat (for example “cut the retakes”) and the results appear here for review."
+          : "The “Suggest threshold” and “Analyze w/ Claude” buttons run Claude headlessly here, on your Claude subscription. Turn on Sync to drive OpenCutAgent from a Claude Code chat instead.");
     }
     function fmtBytes(n) {
       if (!n) return "0 MB";
@@ -572,7 +577,157 @@
         openKeyModal("Your saved ElevenLabs key was rejected. Paste a valid key with the speech_to_text permission.");
         return true;
       }
+      // Cloud mode, no account linked: open the popover so "Sign in with
+      // Google" is one click away instead of a dead-end error toast.
+      if (/cloud mode but not signed in|sign in again from the panel/i.test(m)) {
+        st.cloud.signedIn = false; reflectCloud();
+        open();
+        toast("Sign in with Google (or turn on Self-hosted) to use the AI features.", "info");
+        return true;
+      }
       return false;
+    }
+
+    /* ---- Cloud account (default) vs Self-hosted toggle ----
+     * Sign-in is a device link: the server mints a short code, we open the
+     * user's REAL browser (Google blocks OAuth inside CEP), they approve, and
+     * we poll until the server has the account token. */
+    var linkTimer = null;
+    var linkDeadline = 0;
+    function openExternal(url) {
+      try {
+        if (window.cep && window.cep.util && window.cep.util.openURLInDefaultBrowser) {
+          window.cep.util.openURLInDefaultBrowser(url);
+          return;
+        }
+      } catch (e) {}
+      try { window.open(url, "_blank"); } catch (e) { toast("Open this link in your browser: " + url, "info"); }
+    }
+    function stopLinkPoll() {
+      if (linkTimer) { clearInterval(linkTimer); linkTimer = null; }
+      if (el.cloudLinkWait) el.cloudLinkWait.hidden = true;
+      setLoading(el.cloudAuthBtn, false);
+      reflectCloud();
+    }
+    function reflectCloud() {
+      if (!el.cloudState) return;
+      var c = st.cloud;
+      var self = c.mode === "self";
+      el.selfHostToggle.checked = self;
+      // Self-hosted-only concepts disappear in cloud mode: pairing a local
+      // Claude Code chat (Sync) and the local ElevenLabs key both belong to
+      // the bring-your-own setup. reflect() re-derives the hint text.
+      if (el.syncRow) el.syncRow.hidden = !self;
+      if (el.elevenSec) el.elevenSec.hidden = !self;
+      reflect();
+      if (!connected()) { el.cloudState.textContent = "server offline"; }
+      else if (self) { el.cloudState.textContent = "Self-hosted"; }
+      else if (c.signedIn) { el.cloudState.textContent = c.email || "Signed in"; }
+      else { el.cloudState.textContent = "Not signed in"; }
+      el.cloudAuthBtn.hidden = self || !connected();
+      setLabel(el.cloudAuthBtn, c.signedIn ? "Sign out" : "Sign in with Google");
+      el.cloudUsageRow.hidden = self || !c.signedIn || !c.usageText;
+      if (c.usageText) el.cloudUsage.textContent = c.usageText;
+      if (el.cloudHint) el.cloudHint.textContent = self
+        ? "Everything runs on this machine with your own keys and Claude Code login, like the open-source setup. Turn off to use your OpenCutAgent account instead."
+        : (c.signedIn
+          ? "AI, transcription and animations run on your OpenCutAgent account. Rendering and your footage stay on this machine."
+          : "Sign in to run the AI features on your OpenCutAgent account: no API keys, no Claude install needed. Or turn on Self-hosted to use your own keys.");
+    }
+    function refreshCloud() {
+      if (!el.cloudState) return;
+      if (!connected()) { reflectCloud(); return; }
+      callServer("cloudStatus", {}).then(
+        function (r) {
+          st.cloud.mode = (r && r.mode) || "cloud";
+          st.cloud.signedIn = !!(r && r.signedIn);
+          st.cloud.email = r && r.email;
+          st.cloud.plan = r && r.plan;
+          reflectCloud();
+          updateAllButtons(); // sync-mode button labels depend on the mode
+          if (st.cloud.signedIn && st.cloud.mode === "cloud") {
+            callServer("cloudAccount", {}).then(
+              function (a) {
+                var m = (a && a.month) || {};
+                st.cloud.usageText = (m.usedPct != null ? m.usedPct + "% of quota" : "");
+                if (a && a.plan) st.cloud.plan = a.plan;
+                reflectCloud();
+              },
+              function () { /* usage is nice-to-have; status already rendered */ }
+            );
+          }
+        },
+        function () { el.cloudState.textContent = "unavailable"; }
+      );
+    }
+    function startLink() {
+      if (!connected()) { toast("Server offline. Open the panel again once it reconnects.", "error"); return; }
+      setLoading(el.cloudAuthBtn, true, "Opening browser…");
+      callServer("cloudLink", {}).then(
+        function (r) {
+          setLoading(el.cloudAuthBtn, false, "Waiting…");
+          el.cloudAuthBtn.hidden = true;
+          el.cloudLinkCode.textContent = r.userCode || "";
+          el.cloudLinkWait.hidden = false;
+          openExternal(r.verificationUrl);
+          linkDeadline = Date.now() + ((r.expiresInSec || 600) * 1000);
+          var interval = Math.max(2, r.intervalSec || 3) * 1000;
+          if (linkTimer) clearInterval(linkTimer);
+          linkTimer = setInterval(function () {
+            if (Date.now() > linkDeadline) {
+              stopLinkPoll();
+              toast("Sign-in timed out. Click Sign in with Google to try again.", "error");
+              return;
+            }
+            callServer("cloudPoll", { deviceCode: r.deviceCode }).then(
+              function (p) {
+                if (!p || p.status === "pending") return;
+                stopLinkPoll();
+                if (p.status === "approved") {
+                  st.cloud.signedIn = true; st.cloud.email = p.email; st.cloud.plan = p.plan;
+                  toast("Signed in as " + (p.email || "your account") + ".", "success");
+                  refreshCloud();
+                } else if (p.status === "denied") {
+                  toast("Sign-in was denied in the browser.", "error");
+                } else {
+                  toast("The sign-in code expired. Try again.", "error");
+                }
+              },
+              function () { /* transient poll failure — keep polling until the deadline */ }
+            );
+          }, interval);
+        },
+        function (err) {
+          setLoading(el.cloudAuthBtn, false, "Sign in with Google");
+          toast(err.message, "error");
+        }
+      );
+    }
+    function cloudAuthClick() {
+      if (st.cloud.signedIn) {
+        setLoading(el.cloudAuthBtn, true, "Signing out…");
+        callServer("cloudSignOut", {}).then(
+          function () { setLoading(el.cloudAuthBtn, false); st.cloud.signedIn = false; st.cloud.email = null; st.cloud.usageText = ""; toast("Signed out.", "success"); refreshCloud(); },
+          function (err) { setLoading(el.cloudAuthBtn, false); toast(err.message, "error"); }
+        );
+      } else {
+        startLink();
+      }
+    }
+    function setSelfHosted(on) {
+      if (!connected()) { el.selfHostToggle.checked = st.cloud.mode === "self"; toast("Server offline. Try again once it reconnects.", "error"); return; }
+      callServer("cloudSetMode", { mode: on ? "self" : "cloud" }).then(
+        function (r) {
+          st.cloud.mode = (r && r.mode) || (on ? "self" : "cloud");
+          stopLinkPoll();
+          reflectCloud();
+          updateAllButtons();
+          toast(on
+            ? "Self-hosted mode: using your own keys and Claude Code login."
+            : "Cloud mode: AI runs on your OpenCutAgent account.", "info");
+        },
+        function (err) { el.selfHostToggle.checked = st.cloud.mode === "self"; toast(err.message, "error"); }
+      );
     }
 
     /* ---- Advanced env-var accordion (collapsed by default) ---- */
@@ -619,7 +774,7 @@
       el.aiPop.hidden = false;
       el.aiConfigBtn.classList.add("active");
       el.aiConfigBtn.setAttribute("aria-expanded", "true");
-      resetClearBtn(); refreshCache(); refreshKey();
+      resetClearBtn(); refreshCache(); refreshKey(); refreshCloud();
       if (!el.advBody.hidden) refreshAdv();
     }
     function close() {
@@ -633,9 +788,12 @@
       ["syncToggle", "aiModel", "aiEffort", "sttModel", "aiCtls", "aiHint", "aiConfigBtn", "aiPop", "cacheSize", "clearCacheBtn",
        "usageBtn", "usageModal", "usageCloseBtn", "usageRows", "usageEmpty", "usageTotals",
        "keyState", "keyBtn", "keyModal", "keyCloseBtn", "keyReason", "keyInput", "keyError", "keySaveBtn",
-       "advToggle", "advBody", "advList"]
+       "advToggle", "advBody", "advList",
+       "cloudState", "cloudAuthBtn", "cloudLinkWait", "cloudLinkCode", "cloudLinkCancel", "cloudUsageRow", "cloudUsage", "selfHostToggle", "cloudHint",
+       "syncRow", "elevenSec"]
         .forEach(function (id) { el[id] = $(id); });
       load(); reflect();
+      reflectCloud(); // hide the self-hosted-only rows immediately (default mode is cloud)
       el.syncToggle.addEventListener("change", function () { st.sync = el.syncToggle.checked; persist(); reflect(); updateAllButtons(); });
       el.aiModel.addEventListener("change", function () { st.model = el.aiModel.value; persist(); });
       el.aiEffort.addEventListener("change", function () { st.effort = el.aiEffort.value; persist(); });
@@ -651,6 +809,9 @@
       el.keyModal.addEventListener("click", function (e) { if (e.target === el.keyModal) closeKeyModal(); });
       el.keySaveBtn.addEventListener("click", saveKey);
       el.keyInput.addEventListener("keydown", function (e) { if (e.key === "Enter") saveKey(); });
+      el.cloudAuthBtn.addEventListener("click", cloudAuthClick);
+      el.cloudLinkCancel.addEventListener("click", function (e) { e.preventDefault(); stopLinkPoll(); });
+      el.selfHostToggle.addEventListener("change", function () { setSelfHosted(el.selfHostToggle.checked); });
       el.advToggle.addEventListener("click", toggleAdv);
       // Advanced inputs save on blur or Enter (delegated — the list re-renders).
       el.advList.addEventListener("focusout", function (e) { if (e.target && e.target.getAttribute && e.target.getAttribute("data-envkey")) saveAdvInput(e.target); });
@@ -666,13 +827,18 @@
     }
     return {
       wire: wire,
-      sync: function () { return st.sync; },
+      // Sync (pair with a local Claude Code chat) only exists in self-hosted
+      // mode; in cloud mode the buttons always run through the account.
+      sync: function () { return st.sync && st.cloud.mode === "self"; },
       params: function () { return { model: st.model, effort: st.effort, transcribe_model: st.sttModel }; },
       sttModel: function () { return st.sttModel; },
       keyMissing: keyMissing,
       handleKeyError: handleKeyError,
       openKeyModal: openKeyModal,
       refreshKey: refreshKey,
+      refreshCloud: refreshCloud,
+      // QA hooks: __editagent.AI.setCloud({mode:"cloud",signedIn:true,email:"x@y.z",usageText:"12% of quota"})
+      setCloud: function (patch) { for (var k in patch) if (patch.hasOwnProperty(k)) st.cloud[k] = patch[k]; reflectCloud(); },
       // QA-in-a-browser hooks: __editagent.AI.openUsage(); __editagent.AI.renderUsage({entries:[...],totals:{...}});
       // __editagent.AI.renderAdv([{key,value,def,desc,restart}]) after clicking Advanced.
       openUsage: openUsage,

@@ -17,6 +17,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, tmpdir } from "node:os";
 import { liveEnv } from "./config.js";
+import { cloudEnabled, askCloud } from "./cloud.js";
 import { log } from "./log.js";
 import { mmss } from "./tools/util.js";
 import { recordUsage } from "./usage.js";
@@ -92,6 +93,13 @@ export function friendlyError(message, code) {
  * @returns {Promise<{data:any, raw:object}>}  data = structured_output (or parsed result)
  */
 export function askClaude({ prompt, system, schema, model, effort, token } = {}) {
+  // Cloud mode: same judgment call, but through the OpenCutAgent proxy on the
+  // user's account (no local `claude` CLI, no subscription auth needed).
+  // Same {data, raw} shape, so every caller (aiThreshold, analyzeRetakes) is
+  // unchanged. Self-hosted mode falls through to the original CLI spawn.
+  if (cloudEnabled()) {
+    return askCloud({ prompt, system, schema, model, token });
+  }
   return new Promise((resolve, reject) => {
     const [bin, ...prefixArgs] = resolveClaudeLaunch();
     const args = [...prefixArgs, "-p", "--output-format", "json", "--strict-mcp-config", "--tools", "", "--no-session-persistence"];

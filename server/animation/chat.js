@@ -11,6 +11,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { resolveClaudeLaunch, friendlyError } from "../ai.js";
+import { cloudEnabled, cloudChatEnv } from "../cloud.js";
 import { liveEnv } from "../config.js";
 import { log } from "../log.js";
 
@@ -102,7 +103,13 @@ export function runChatTurn({ kitDirPath, job, prompt, styleSkill = "", model, e
     if (effort) args.push("--effort", effort);
 
     const env = { ...process.env };
-    delete env.ANTHROPIC_API_KEY; // subscription auth only — never silently bill an API key
+    delete env.ANTHROPIC_API_KEY; // never silently bill a stray API key
+    if (cloudEnabled()) {
+      // Cloud mode: the CLI bills through the OpenCutAgent proxy on the
+      // user's account (base-URL gateway override + bearer token) instead of
+      // a Claude subscription. Tools still run locally in the workspace.
+      Object.assign(env, cloudChatEnv());
+    }
 
     let child;
     try {

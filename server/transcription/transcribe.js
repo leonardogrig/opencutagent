@@ -5,6 +5,7 @@ import { basename, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { log } from "../log.js";
 import { liveEnv } from "../config.js";
+import { cloudEnabled, cloudTranscribe } from "../cloud.js";
 import { recordUsage } from "../usage.js";
 
 const SCRIBE_URL = "https://api.elevenlabs.io/v1/speech-to-text";
@@ -260,6 +261,17 @@ export function mergeWords(existing, incoming) {
 }
 
 async function callScribe(wavPath, apiKey, { model, language, numSpeakers } = {}) {
+  // Cloud mode: same audio, same payload shape, but through the OpenCutAgent
+  // proxy on the user's account — no ElevenLabs key on this machine.
+  if (cloudEnabled()) {
+    try {
+      return await cloudTranscribe(wavPath, { model: scribeModel(model), language, numSpeakers });
+    } catch (e) {
+      const err = new TranscribeError(e.message);
+      err.code = e.code || "cloud_error";
+      throw err;
+    }
+  }
   const buf = readFileSync(wavPath);
   const form = new FormData();
   form.append("file", new Blob([buf], { type: "audio/wav" }), basename(wavPath));
@@ -391,8 +403,9 @@ export async function transcribeSourceRanges(mediaPath, ranges, opts = {}) {
 
   // The key is only needed once we actually have something to transcribe — a
   // fully-cached reload must keep working with no key configured at all.
-  const apiKey = liveEnv("ELEVENLABS_API_KEY");
-  if (!apiKey) {
+  // Cloud mode needs no local key either: the proxy holds it.
+  const apiKey = cloudEnabled() ? null : liveEnv("ELEVENLABS_API_KEY");
+  if (!apiKey && !cloudEnabled()) {
     throw new TranscribeError(
       "ELEVENLABS_API_KEY is not set. Add your ElevenLabs API key in the panel's settings (gear icon > ElevenLabs), or in the project .env, then retry."
     );

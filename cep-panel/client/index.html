@@ -28,6 +28,21 @@
            used by the explicit "Suggest threshold" / "Analyze w/ Claude" actions. -->
       <div id="aiPop" class="pop" hidden role="dialog" aria-label="Claude and storage settings">
         <div class="pop-sec">
+          <div class="pop-title">Account</div>
+          <div class="pop-row"><span>Status</span><span id="cloudState" class="pop-val">…</span></div>
+          <div id="cloudUsageRow" class="pop-row" hidden><span>This month</span><span id="cloudUsage" class="pop-val"></span></div>
+          <button id="cloudAuthBtn" class="sm" data-tip="Cloud mode runs the AI (retakes, animations, transcription) on your OpenCutAgent account. Sign-in opens your browser; no API keys needed.">
+            <svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM8 4a2.2 2.2 0 1 1 0 4.4A2.2 2.2 0 0 1 8 4zm0 9.1a5.1 5.1 0 0 1-3.8-1.7c.1-1.2 2.5-1.9 3.8-1.9s3.7.7 3.8 1.9A5.1 5.1 0 0 1 8 13.1z" fill="currentColor"/></svg>
+            <span class="lbl">Sign in with Google</span>
+          </button>
+          <div id="cloudLinkWait" class="pop-hint" hidden>Approve the code <b id="cloudLinkCode"></b> in your browser… <a href="#" id="cloudLinkCancel">cancel</a></div>
+          <label class="pop-row sync" data-tip="On: everything runs locally with your own keys and Claude Code login, exactly like the open-source setup (no account needed). Off: AI and transcription run through your OpenCutAgent account in the cloud.">
+            <span>Self-hosted</span>
+            <input type="checkbox" id="selfHostToggle" class="switch" role="switch" />
+          </label>
+          <div id="cloudHint" class="pop-hint"></div>
+        </div>
+        <div class="pop-sec">
           <div class="pop-title">Config</div>
           <div id="aiCtls" class="pop-group">
             <!-- value = tier alias (always valid, auto-resolves to the newest of that tier);
@@ -51,7 +66,7 @@
               </select>
             </label>
           </div>
-          <label class="pop-row sync" data-tip="A way to talk to Claude about this project. On: the panel pairs with your Claude Code chat through the premiere MCP server, so you can ask for edits in chat (like “cut the retakes”) and watch the results appear here. Off: the AI buttons run Claude headlessly on your subscription, no chat needed.">
+          <label id="syncRow" class="pop-row sync" data-tip="A way to talk to Claude about this project. On: the panel pairs with your Claude Code chat through the premiere MCP server, so you can ask for edits in chat (like “cut the retakes”) and watch the results appear here. Off: the AI buttons run Claude headlessly on your subscription, no chat needed.">
             <span>Sync with Claude Code</span>
             <input type="checkbox" id="syncToggle" class="switch" role="switch" />
           </label>
@@ -76,7 +91,7 @@
           </button>
           <div class="pop-hint">Transcripts and audio scans are cached per source file so reloads are free. Clearing means the next Load re-transcribes (ElevenLabs credits).</div>
         </div>
-        <div class="pop-sec">
+        <div class="pop-sec" id="elevenSec">
           <div class="pop-title">ElevenLabs</div>
           <div class="pop-row"><span>API key</span><span id="keyState" class="pop-val">…</span></div>
           <button id="keyBtn" class="sm" data-tip="The ElevenLabs API key that pays for transcription (Load segments / Analyze w/ Claude). Silence removal never needs it.">

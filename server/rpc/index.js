@@ -10,6 +10,7 @@ import { buildReview, markDecisions, applyReview, reconcile, reinsertTarget, req
 import { buildLevels, levelsForPanel, applySilenceRanges } from "../silences.js";
 import { restoreUndo, hasUndo } from "../undo.js";
 import { liveEnv, setEnvKey } from "../config.js";
+import { readCloudConfig, writeCloudConfig, cloudUrl, cloudLinkStart, cloudLinkPoll, cloudSignOut, cloudMe } from "../cloud.js";
 import { askClaude, THRESHOLD_SCHEMA, thresholdSystem, thresholdPrompt, analyzeRetakes } from "../ai.js";
 import { readUsage, recordUsage } from "../usage.js";
 import { animHandlers } from "../animation/index.js";
@@ -37,6 +38,8 @@ async function cancel(_params, _helpers, ctx) {
     if (ctx.panelOp.child) { try { ctx.panelOp.child.kill("SIGTERM"); } catch { /* already exited */ } }
     // chunked retake analysis runs several headless calls at once — kill them all.
     if (ctx.panelOp.children) for (const c of ctx.panelOp.children) { try { c.kill("SIGTERM"); } catch { /* already exited */ } }
+    // cloud-mode oracle calls are HTTP, not child processes — abort the fetches.
+    if (ctx.panelOp.cloudAborts) for (const a of ctx.panelOp.cloudAborts) { try { a(); } catch { /* already settled */ } }
   }
   return { cancelled: true };
 }
@@ -540,6 +543,7 @@ const ENV_SPECS = [
   { key: "EDITAGENT_ANIM_RENDER_TIMEOUT_MS", def: "1800000", desc: "Hard timeout for one animation render, in milliseconds." },
   { key: "EDITAGENT_ANIM_TRACK", def: "1", desc: "0-based video track animation clips are placed on. 1 = V2." },
   { key: "EDITAGENT_ANIM_HOME", def: "", desc: "Where the animation workspace lives. Empty = ~/.opencutagent/animation-kit.", live: false },
+  { key: "EDITAGENT_CLOUD_URL", def: "https://cloud.opencutagent.com", desc: "The OpenCutAgent cloud service used in cloud mode. Point it at http://localhost:3000 when developing the backend." },
   { key: "PREMIERE_BRIDGE_PORT", def: "3001", desc: "Port the panel and server talk over.", live: false },
   { key: "FFMPEG_BIN", def: "ffmpeg", desc: "Path to ffmpeg if it isn't on PATH.", live: false },
   { key: "EDITAGENT_CACHE_DIR", def: "", desc: "Where transcripts and audio scans are cached. Empty = the project's .cache folder.", live: false },
@@ -596,7 +600,52 @@ async function ping() {
   return { ok: true };
 }
 
-const HANDLERS = { ping, cancel, loadSegments, autoLoadSegments, applyDecisions, softApply, clearMarkers, exportTranscript, timelineMap, reinsertSegment, analyzeLevels, applySilences, aiThreshold, aiRetakes, undoLastApply, undoStatus, cacheInfo, clearCache, usageLog, keyStatus, setApiKey, envList, setEnv, ...animHandlers };
+/* ---- Cloud account (default mode) vs Self-hosted toggle ----
+ * Cloud mode routes AI + transcription through the OpenCutAgent backend on the
+ * user's Google-linked account (no keys, no Claude install for retakes).
+ * Self-hosted is the original fully-local behavior. */
+
+/** Mode + sign-in state for the panel's Account section. */
+async function cloudStatus() {
+  const cfg = readCloudConfig();
+  return { mode: cfg.mode, signedIn: !!cfg.token, email: cfg.email, plan: cfg.plan, url: cloudUrl() };
+}
+
+/** Begin the Google device link; the PANEL opens verificationUrl in the system browser. */
+async function cloudLink() {
+  return cloudLinkStart();
+}
+
+/** One poll step; on approval the token is persisted server-side. */
+async function cloudPoll(params) {
+  if (!params.deviceCode) throw new Error("Missing deviceCode.");
+  const r = await cloudLinkPoll(String(params.deviceCode));
+  if (r.status === "approved") {
+    const cfg = readCloudConfig();
+    return { status: "approved", email: cfg.email, plan: cfg.plan };
+  }
+  return { status: r.status };
+}
+
+/** Revoke + forget the account token. */
+async function cloudSignOutRpc() {
+  await cloudSignOut();
+  return { ok: true };
+}
+
+/** Flip between "cloud" (default) and "self" (self-hosted). */
+async function cloudSetMode(params) {
+  const mode = params.mode === "self" ? "self" : "cloud";
+  writeCloudConfig({ mode });
+  return { mode };
+}
+
+/** Account + this month's usage (proxied from the backend). */
+async function cloudAccount() {
+  return cloudMe();
+}
+
+const HANDLERS = { ping, cancel, loadSegments, autoLoadSegments, applyDecisions, softApply, clearMarkers, exportTranscript, timelineMap, reinsertSegment, analyzeLevels, applySilences, aiThreshold, aiRetakes, undoLastApply, undoStatus, cacheInfo, clearCache, usageLog, keyStatus, setApiKey, envList, setEnv, cloudStatus, cloudLink, cloudPoll, cloudSignOut: cloudSignOutRpc, cloudSetMode, cloudAccount, ...animHandlers };
 
 export function createRpcDispatcher(ctx) {
   return async (method, params, helpers) => {
