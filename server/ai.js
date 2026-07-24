@@ -63,6 +63,23 @@ export function resolveClaudeLaunch() {
   return ["claude"]; // last resort: rely on PATH (spawn uses libuv execvp / CreateProcess)
 }
 
+/**
+ * Environment for a headless claude spawn: the server's env minus any stray
+ * ANTHROPIC_API_KEY (subscription/gateway auth only — never silently bill a
+ * key). EDITAGENT_CLAUDE_CONFIG_DIR (.env, live) pins CLAUDE_CONFIG_DIR so the
+ * spawn uses a specific Claude Code login — needed when the user keeps multiple
+ * logins in separate config dirs and the server was started outside any Claude
+ * session (e.g. auto-started by the panel), where the default ~/.claude login
+ * may be stale.
+ */
+export function claudeSpawnEnv() {
+  const env = { ...process.env };
+  delete env.ANTHROPIC_API_KEY;
+  const configDir = liveEnv("EDITAGENT_CLAUDE_CONFIG_DIR");
+  if (configDir) env.CLAUDE_CONFIG_DIR = configDir;
+  return env;
+}
+
 /** Turn low-level spawn/auth failures into a message the panel can show verbatim. */
 export function friendlyError(message, code) {
   const m = String(message || "");
@@ -108,9 +125,8 @@ export function askClaude({ prompt, system, schema, model, effort, token } = {})
     if (model && model !== "latest") args.push("--model", model);
     if (effort) args.push("--effort", effort);
 
-    // Force subscription auth: never let a stray API key silently bill the user.
-    const env = { ...process.env };
-    delete env.ANTHROPIC_API_KEY;
+    // Force subscription auth (and honor a pinned Claude login dir).
+    const env = claudeSpawnEnv();
 
     let child;
     try {

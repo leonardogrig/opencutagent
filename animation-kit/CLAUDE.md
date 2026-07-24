@@ -33,6 +33,9 @@ canvas size, fps, exact duration and background mode are in the system prompt an
 - `src/components/` — assembled blocks: `Canvas` (bg + dot-grid; `transparent` prop for overlay
   jobs), `SketchLayer` (full-frame SVG; children use pixel coords), `NodeCard`, `ConnectionLine`,
   `StickyNote`, `Callout`, `Title`, `Label`, `Badge`, `BulletList`, `DotGrid`.
+- Some styles ship their OWN components/theme under `styles/<style>/src/` (import from
+  `../../../styles/<style>/src`). Your job's style guide documents them; when it does, prefer
+  them over the generic blocks. Style code is read-only too (except the Learnings Log).
 
 ## Your job folder
 - `brief.md` — the assignment: selected narration with word timings, full-video transcript

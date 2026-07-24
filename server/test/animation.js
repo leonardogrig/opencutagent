@@ -10,8 +10,10 @@ import {
   regenerateManifest, readRenderSignal, saveRefImage, saveJob, loadJobsFrom, readChat, appendChat,
   jobsRootFor, animTrackIndex, discardJob, jobTitle, clampTrackIndex,
 } from "../animation/jobs.js";
-import { listStyles, readStyleSkill } from "../animation/kit.js";
+import { listStyles, readStyleSkill, kitDir as animWorkspaceDir } from "../animation/kit.js";
 import { toolDetail, buildSystemAppend } from "../animation/chat.js";
+import { claudeSpawnEnv } from "../ai.js";
+import { liveEnv } from "../config.js";
 import { parseFfDuration, parseRenderProgress, renderScale } from "../animation/render.js";
 
 let failures = 0;
@@ -71,6 +73,8 @@ const scaffold = sceneScaffold(job);
 check("scaffold is transparent-aware", scaffold.includes("<Canvas transparent={true}>"), scaffold);
 check("scaffold names the job", scaffold.includes("anim-test1"), null);
 check("solid scaffold uses solid canvas", sceneScaffold({ ...job, background: "solid" }).includes("transparent={false}"), null);
+check("scaffold points at the style package when it ships src", sceneScaffold({ ...job, style: "n8n" }, { styleHasSrc: true }).includes('"../../../styles/n8n/src"'), null);
+check("scaffold stays generic for a skill-only style", !scaffold.includes("styles/"), null);
 
 const brief = buildBrief(job, {
   selected: [
@@ -105,7 +109,9 @@ check("jobTitle: empty text falls back", jobTitle("") === "Animation" && jobTitl
 /* ---------- kit: styles registry + skill ---------- */
 const styles = listStyles();
 check("excalidraw style is registered", styles.some((s) => s.id === "excalidraw" && s.default), styles);
+check("n8n style is registered (not default)", styles.some((s) => s.id === "n8n" && !s.default && !s.custom), styles);
 check("style skill is readable", /Learnings log/i.test(readStyleSkill("excalidraw")), null);
+check("n8n skill teaches its shipped components", /SketchNode/.test(readStyleSkill("n8n")) && /Learnings log/i.test(readStyleSkill("n8n")), null);
 check("unknown style skill is empty", readStyleSkill("nope") === "", readStyleSkill("nope"));
 
 /* ---------- workspace-file helpers (temp dirs) ---------- */
@@ -150,6 +156,29 @@ try {
   const chat = readChat(loaded[0]);
   check("chat log persists in order", chat.length === 2 && chat[0].role === "user" && chat[1].tools[0].name === "Write", chat);
 
+  // custom styles: a package dropped into the WORKSPACE's styles/ is discovered,
+  // flagged custom, and its skill reads from the workspace; a shipped style with
+  // the same id shadows a workspace copy.
+  const wsHome = join(tmp, "anim-home");
+  mkdirSync(join(wsHome, "styles", "mystyle"), { recursive: true });
+  writeFileSync(join(wsHome, "styles", "mystyle", "style.json"), JSON.stringify({ id: "mystyle", name: "My Style", description: "hand-made" }));
+  writeFileSync(join(wsHome, "styles", "mystyle", "SKILL.md"), "custom skill text");
+  mkdirSync(join(wsHome, "styles", "excalidraw"), { recursive: true });
+  writeFileSync(join(wsHome, "styles", "excalidraw", "style.json"), JSON.stringify({ id: "excalidraw", name: "Shadowed" }));
+  const prevHome = process.env.EDITAGENT_ANIM_HOME;
+  process.env.EDITAGENT_ANIM_HOME = wsHome;
+  if (animWorkspaceDir() === wsHome) {
+    const merged = listStyles();
+    check("workspace custom style is listed and flagged", merged.some((s) => s.id === "mystyle" && s.custom === true && s.name === "My Style"), merged);
+    const exca = merged.find((s) => s.id === "excalidraw");
+    check("shipped style shadows a workspace copy with the same id", exca && exca.name === "Excalidraw" && !exca.custom, exca);
+    check("custom style skill reads from the workspace", readStyleSkill("mystyle") === "custom skill text", readStyleSkill("mystyle"));
+  } else {
+    console.log("SKIP  custom-style checks (EDITAGENT_ANIM_HOME is pinned in .env)");
+  }
+  if (prevHome === undefined) delete process.env.EDITAGENT_ANIM_HOME;
+  else process.env.EDITAGENT_ANIM_HOME = prevHome;
+
   // discard: flagged + kept on disk (a placed clip's render must not go offline), gone from the list
   discardJob(loaded[0], kitDir);
   const onDisk = JSON.parse(readFileSync(join(job3.outDir, "job.json"), "utf8"));
@@ -166,6 +195,22 @@ const sys = buildSystemAppend({ id: "anim-z", fps: 30, width: 1920, height: 1080
 check("system prompt pins the job folder + duration", sys.includes("src/jobs/anim-z/") && sys.includes("duration 90 frames (3.00s)"), sys);
 check("system prompt embeds the style skill", sys.includes("<style-skill>") && sys.includes("STYLE GUIDE HERE"), null);
 check("system prompt teaches the render.json protocol", sys.includes('render.json as {"version": N'), null);
+
+/* ---------- headless spawn env (API-key scrub + pinned Claude login dir) ---------- */
+{
+  const prevKey = process.env.ANTHROPIC_API_KEY;
+  const prevDir = process.env.EDITAGENT_CLAUDE_CONFIG_DIR;
+  process.env.ANTHROPIC_API_KEY = "sk-stray";
+  process.env.EDITAGENT_CLAUDE_CONFIG_DIR = "/tmp/claude-test-cfg";
+  // liveEnv prefers the real project .env over process.env, so assert against
+  // whatever it resolves (machine-independent either way).
+  const expectedDir = liveEnv("EDITAGENT_CLAUDE_CONFIG_DIR");
+  const env = claudeSpawnEnv();
+  check("spawn env scrubs a stray ANTHROPIC_API_KEY", !("ANTHROPIC_API_KEY" in env), env.ANTHROPIC_API_KEY);
+  check("spawn env pins CLAUDE_CONFIG_DIR from EDITAGENT_CLAUDE_CONFIG_DIR", !!expectedDir && env.CLAUDE_CONFIG_DIR === expectedDir, env.CLAUDE_CONFIG_DIR);
+  if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = prevKey;
+  if (prevDir === undefined) delete process.env.EDITAGENT_CLAUDE_CONFIG_DIR; else process.env.EDITAGENT_CLAUDE_CONFIG_DIR = prevDir;
+}
 
 /* ---------- render scale (sequence-resolution self-heal) ---------- */
 {

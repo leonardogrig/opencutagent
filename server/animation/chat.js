@@ -10,7 +10,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
-import { resolveClaudeLaunch, friendlyError } from "../ai.js";
+import { resolveClaudeLaunch, claudeSpawnEnv, friendlyError } from "../ai.js";
 import { cloudEnabled, cloudChatEnv } from "../cloud.js";
 import { liveEnv } from "../config.js";
 import { log } from "../log.js";
@@ -102,8 +102,7 @@ export function runChatTurn({ kitDirPath, job, prompt, styleSkill = "", model, e
     if (model && model !== "latest") args.push("--model", model);
     if (effort) args.push("--effort", effort);
 
-    const env = { ...process.env };
-    delete env.ANTHROPIC_API_KEY; // never silently bill a stray API key
+    const env = claudeSpawnEnv(); // no stray API key; honors a pinned Claude login dir
     if (cloudEnabled()) {
       // Cloud mode: the CLI bills through the OpenCutAgent proxy on the
       // user's account (base-URL gateway override + bearer token) instead of

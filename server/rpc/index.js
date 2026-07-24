@@ -526,6 +526,7 @@ const ENV_SPECS = [
   { key: "EDITAGENT_AI_EFFORT", def: "high", desc: "Fallback reasoning effort for the AI buttons. low, medium, high, xhigh or max." },
   { key: "EDITAGENT_AI_TIMEOUT_MS", def: "600000", desc: "Hard timeout for one headless Claude call, in milliseconds. Raise it for very long analyses." },
   { key: "EDITAGENT_CLAUDE_BIN", def: "", desc: "Full path to the claude CLI if it isn't found automatically." },
+  { key: "EDITAGENT_CLAUDE_CONFIG_DIR", def: "", desc: "Folder of the Claude Code login the AI buttons should use (sets CLAUDE_CONFIG_DIR), for people who keep separate Claude logins. Empty = the default login." },
   { key: "EDITAGENT_AI_CHUNK", def: "36", desc: "Segments per chunk when Analyze w/ Claude splits a long timeline into windows." },
   { key: "EDITAGENT_AI_CHUNK_CONTEXT", def: "14", desc: "Extra context segments each chunk sees on both sides of its window." },
   { key: "EDITAGENT_AI_CONCURRENCY", def: "4", desc: "How many analysis chunks run at the same time." },

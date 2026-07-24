@@ -132,19 +132,30 @@ export async function ensureKit({ onProgress = () => {}, token } = {}) {
   return dir;
 }
 
-/** The available animation styles, read from the SHIPPED template (always current). */
+/**
+ * The available animation styles. Each style is a self-contained package at
+ * styles/<id>/ (see animation-kit/styles/README.md). Shipped styles come from
+ * the TEMPLATE (always current); the user can also drop their own package into
+ * the WORKSPACE's styles/ folder — those show up flagged `custom` (the sync
+ * only ever adds template files, so custom folders survive kit updates).
+ */
 export function listStyles() {
-  const stylesDir = join(KIT_TEMPLATE_DIR, "styles");
-  const out = [];
-  let entries = [];
-  try { entries = readdirSync(stylesDir, { withFileTypes: true }); } catch { return out; }
-  for (const e of entries) {
-    if (!e.isDirectory()) continue;
-    try {
-      const manifest = JSON.parse(readFileSync(join(stylesDir, e.name, "style.json"), "utf8"));
-      if (manifest && manifest.id) out.push({ id: manifest.id, name: manifest.name || manifest.id, description: manifest.description || "", default: !!manifest.default });
-    } catch { /* not a valid style folder */ }
+  const seen = new Map();
+  for (const { base, custom } of [{ base: KIT_TEMPLATE_DIR, custom: false }, { base: kitDir(), custom: true }]) {
+    const stylesDir = join(base, "styles");
+    let entries = [];
+    try { entries = readdirSync(stylesDir, { withFileTypes: true }); } catch { continue; }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      try {
+        const manifest = JSON.parse(readFileSync(join(stylesDir, e.name, "style.json"), "utf8"));
+        if (manifest && manifest.id && !seen.has(manifest.id)) {
+          seen.set(manifest.id, { id: manifest.id, name: manifest.name || manifest.id, description: manifest.description || "", default: !!manifest.default, custom });
+        }
+      } catch { /* not a valid style folder */ }
+    }
   }
+  const out = [...seen.values()];
   out.sort((a, b) => (b.default ? 1 : 0) - (a.default ? 1 : 0) || a.name.localeCompare(b.name));
   return out;
 }

@@ -140,8 +140,11 @@ export function regenerateManifest(dir = kitDir()) {
 /* ============================ scaffold ============================ */
 
 /** The starter Scene.tsx the agent replaces. Pure (unit-tested). */
-export function sceneScaffold(job) {
+export function sceneScaffold(job, { styleHasSrc = false } = {}) {
   const transparent = job.background === "transparent";
+  const styleHint = styleHasSrc
+    ? `\n// This job's style ships its own components: import them from\n// "../../../styles/${job.style}/src" (the style guide documents each one).`
+    : "";
   return `import React from "react";
 import { useVideoConfig, interpolate, useCurrentFrame } from "remotion";
 import { Canvas, SketchLayer } from "../../components";
@@ -149,7 +152,7 @@ import { SketchText } from "../../sketch";
 import { tokens } from "../../theme/tokens";
 
 // ${job.id}: scaffold scene. Read brief.md in this folder, then replace this
-// placeholder with the real animation. Duration/size/fps are fixed (useVideoConfig).
+// placeholder with the real animation. Duration/size/fps are fixed (useVideoConfig).${styleHint}
 const Scene: React.FC = () => {
   const { width, height, durationInFrames } = useVideoConfig();
   const frame = useCurrentFrame();
@@ -324,7 +327,9 @@ export async function createJob(ctx, { indexes, style, background, trackIndex, p
   writeFileSync(join(jobDir, "job.json"), JSON.stringify({
     id, fps, width, height, durationInFrames, background: job.background, style: job.style,
   }, null, 2));
-  writeFileSync(join(jobDir, "Scene.tsx"), sceneScaffold(job));
+  writeFileSync(join(jobDir, "Scene.tsx"), sceneScaffold(job, {
+    styleHasSrc: existsSync(join(kitDirPath, "styles", job.style, "src", "index.ts")),
+  }));
 
   // Brief: selected narration (with word timing when cached) + whole transcript
   const byIndex = new Map(map.map((m) => [m.index, m]));
