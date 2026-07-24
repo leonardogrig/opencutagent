@@ -422,6 +422,26 @@
               <span>Track</span>
               <select id="animTrack"></select>
             </label>
+            <label class="anim-style" id="animSizeWrap" data-tip="The resolution the animation is rendered at. Sequence matches your timeline automatically; pick a preset or Custom to force a different output size, for example 4K masters over a 1080p timeline.">
+              <span>Size</span>
+              <select id="animSize">
+                <option value="seq">Sequence</option>
+                <option value="4k">4K</option>
+                <option value="qhd">1440p</option>
+                <option value="fhd">1080p</option>
+                <option value="hd">720p</option>
+                <option value="custom">Custom</option>
+              </select>
+            </label>
+            <div class="segctl segctl-sm" id="animOrientCtl" data-tip="Horizontal is landscape (like 3840x2160); Vertical flips the preset for portrait formats like Shorts or Reels (2160x3840).">
+              <label class="segopt"><input type="radio" name="animOrient" value="h" checked /><span>Horizontal</span></label>
+              <label class="segopt"><input type="radio" name="animOrient" value="v" /><span>Vertical</span></label>
+            </div>
+            <span class="anim-style anim-size-custom" id="animSizeCustom" style="display:none" data-tip="Exact output size in pixels, width x height. Odd numbers are rounded down to even (video encoders require it).">
+              <input type="number" id="animW" min="16" max="8192" step="2" placeholder="W" />
+              <span>×</span>
+              <input type="number" id="animH" min="16" max="8192" step="2" placeholder="H" />
+            </span>
             <span class="grow"></span>
             <button id="animBackBtn" class="ghost" style="display:none" data-tip="Back to the segment picker and your other animations. The chat is saved; reopening the animation resumes it.">
               <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>

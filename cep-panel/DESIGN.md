@@ -142,15 +142,23 @@ primary buttons keep crisp dark labels (white-on-Ember is only ~3.1:1).
   with friendly verbs ("Reading the brief…", "Sketching the animation…",
   "Rendering v2: 47%") that replace in place and never stack; real messages
   insert above it and it disappears when the turn ends. Only the turn's FINAL
-  reply becomes a normal bubble. `.anim-msg.system.placed` ("Animation v1
-  placed on V2 at 10:50. Click to view.", success-green, underline on hover)
-  and the job-header `.badge.seekable` carry `data-seek` → clicking moves
+  reply becomes a normal bubble — and on a turn that RENDERS, even that is
+  suppressed (persisted `hidden`): the placed notice is the reply, now carrying
+  the turn's cost: `.anim-msg.system.placed` ("Animation v1 placed on V2 at
+  10:50 (18.4k tokens, 3m 12s). Click to view.", success-green, underline on
+  hover) and the job-header `.badge.seekable` carry `data-seek` → clicking moves
   Premiere's playhead to the animation's start. Composer `.anim-inputbox`:
   attach pills (`.anim-pill` + ×), textarea (Enter sends, Shift+Enter newline),
-  single-primary Send that swaps to a danger Stop while the agent works. Top `.anim-bar`: Style select + a
-  `.segctl-sm` Solid bg / No bg control (both freeze once a job is open — they
-  are fixed at creation). Drag-drop images onto the chat = `.dragging` dashed
-  outline. Selected `.segctl` pills are a JS-set `.on` class (no `:has()`).
+  single-primary Send that swaps to a danger Stop while the agent works. Top
+  `.anim-bar` (flex-wrap): Style select, a `.segctl-sm` Solid bg / No bg
+  control, Track select, and the **output Size group** — `#animSize` select
+  (Sequence / 4K / 1440p / 1080p / 720p / Custom), a Horizontal/Vertical
+  `.segctl-sm` shown only for presets (Vertical swaps W↔H for Shorts-style
+  portrait), and `.anim-size-custom` W×H number inputs shown only for Custom
+  (62px wide, rounded down to even server-side). All freeze/hide once a job is
+  open — fixed at creation; a pinned size shows in the job meta ("· 3840x2160").
+  Drag-drop images onto the chat = `.dragging` dashed outline. Selected
+  `.segctl` pills are a JS-set `.on` class (no `:has()`).
 
 ## Constraints / gotchas
 

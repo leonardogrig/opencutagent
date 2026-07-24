@@ -34,6 +34,37 @@ export function newJobId(now = Date.now()) {
 }
 
 /**
+ * Validate a panel-chosen output size. Returns {width,height} rounded DOWN to
+ * even numbers (h264 yuv420p refuses odd dimensions) or null when the values
+ * aren't a usable size, so garbage falls back to the sequence size. Pure
+ * (unit-tested).
+ */
+export function normalizeSizeOverride(w, h) {
+  const W = Math.round(Number(w)), H = Math.round(Number(h));
+  if (!Number.isFinite(W) || !Number.isFinite(H)) return null;
+  if (W < 16 || H < 16 || W > 8192 || H > 8192) return null;
+  return { width: W - (W % 2), height: H - (H % 2) };
+}
+
+/** "18432" -> "18.4k" for the placed-notice token count. Pure (unit-tested). */
+export function fmtTokens(n) {
+  const v = Math.round(Number(n));
+  if (!Number.isFinite(v) || v <= 0) return null;
+  if (v < 1000) return String(v);
+  const k = v / 1000;
+  return (k >= 100 ? String(Math.round(k)) : k.toFixed(1).replace(/\.0$/, "")) + "k";
+}
+
+/** Milliseconds -> "45s" / "3m 12s" for the placed notice. Pure (unit-tested). */
+export function fmtElapsed(ms) {
+  const raw = Number(ms);
+  if (!Number.isFinite(raw) || raw < 0) return null;
+  const s = Math.round(raw / 1000);
+  if (s < 60) return s + "s";
+  return Math.floor(s / 60) + "m " + (s % 60) + "s";
+}
+
+/**
  * A human title for a job, at most `max` characters: derived from the selected
  * narration at creation, replaced by the agent's own name for the animation
  * once it builds one (render.json "title"). Pure (unit-tested).
@@ -280,7 +311,7 @@ export function appendChat(job, entry) {
  * folder + brief, registers the composition, and persists the job record next
  * to the Premiere project.
  */
-export async function createJob(ctx, { indexes, style, background, trackIndex, projectDir }, kitDirPath) {
+export async function createJob(ctx, { indexes, style, background, trackIndex, projectDir, width: widthOpt, height: heightOpt }, kitDirPath) {
   const review = requireReview(ctx);
   const { map, timeline } = await reconcile(ctx);
   const check = validateSelection(review.segments, map, indexes);
@@ -288,9 +319,13 @@ export async function createJob(ctx, { indexes, style, background, trackIndex, p
 
   const seq = timeline.sequence || {};
   const fps = renderFps(seq.frameRate || review.frameRate || 30);
-  const width = Number(seq.frameSizeHorizontal) || 1920;
-  const height = Number(seq.frameSizeVertical) || 1080;
-  if (!Number(seq.frameSizeHorizontal) || !Number(seq.frameSizeVertical)) {
+  // The panel may pin an explicit output size (4K/vertical/custom); otherwise
+  // the composition matches the sequence. sizeSource:"custom" also disables the
+  // render-time sequence-size matching, so the user's choice always wins.
+  const override = normalizeSizeOverride(widthOpt, heightOpt);
+  const width = override ? override.width : (Number(seq.frameSizeHorizontal) || 1920);
+  const height = override ? override.height : (Number(seq.frameSizeVertical) || 1080);
+  if (!override && (!Number(seq.frameSizeHorizontal) || !Number(seq.frameSizeVertical))) {
     // Render-time --scale still corrects same-aspect sizes, but log the gap.
     log(`animation: sequence frame size unavailable, composing at ${width}x${height}`);
   }
@@ -309,6 +344,7 @@ export async function createJob(ctx, { indexes, style, background, trackIndex, p
     style: style || "excalidraw",
     background: background === "transparent" ? "transparent" : "solid",
     trackIndex: clampTrackIndex(trackIndex),
+    sizeSource: override ? "custom" : "sequence",
     fps, width, height, durationInFrames,
     range: check.range,
     segmentIndexes: check.indexes,

@@ -64,6 +64,7 @@ export function buildSystemAppend(job, styleSkill) {
     "Finishing protocol (IMPORTANT):",
     `- When the scene compiles (npx tsc --noEmit) and you're satisfied, write src/jobs/${job.id}/render.json as {"version": N, "notes": "...", "title": "..."} — start at 1 and bump N on every revision that should be re-rendered. "title" is a short human name for what you built (2 to 3 plain words, 20 characters max, e.g. "Webhook branches") — it labels this animation in the panel.`,
     "- The SERVER watches that file: after your reply it renders the composition and places the clip on the Premiere timeline automatically. Do NOT run `remotion render` for the final yourself, and you have no access to Premiere.",
+    '- On a turn where you write render.json, keep your final message to ONE short sentence: the panel replaces it with an automatic "placed on the timeline" notice, so a longer description is never shown. Save the 2-to-5-sentence description for turns where you are answering or discussing, not delivering.',
     "- Stills for self-checking are fine: npx remotion still " + job.id + " src/jobs/" + job.id + "/check.png --frame=N (then view the PNG).",
     "- If you're only answering a question or the scene isn't ready, don't touch render.json.",
     "",

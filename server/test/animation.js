@@ -9,6 +9,7 @@ import {
   validateSelection, manifestSource, sceneScaffold, buildBrief, renderFps, newJobId,
   regenerateManifest, readRenderSignal, saveRefImage, saveJob, loadJobsFrom, readChat, appendChat,
   jobsRootFor, animTrackIndex, discardJob, jobTitle, clampTrackIndex,
+  normalizeSizeOverride, fmtTokens, fmtElapsed,
 } from "../animation/jobs.js";
 import { listStyles, readStyleSkill, kitDir as animWorkspaceDir } from "../animation/kit.js";
 import { toolDetail, buildSystemAppend } from "../animation/chat.js";
@@ -105,6 +106,24 @@ check("jobTitle: short text passes through", jobTitle("Webhook branches") === "W
 const longTitle = jobTitle("For example, I've just asked it a really long question");
 check("jobTitle: long text truncates to <= 20 chars on a word", longTitle.length <= 20 && longTitle.endsWith("…"), longTitle);
 check("jobTitle: empty text falls back", jobTitle("") === "Animation" && jobTitle("   ") === "Animation", null);
+
+/* ---------- output-size override + placed-notice formatting ---------- */
+let sz = normalizeSizeOverride(3840, 2160);
+check("normalizeSizeOverride: 4K passes through", sz && sz.width === 3840 && sz.height === 2160, sz);
+sz = normalizeSizeOverride(1081, 1921);
+check("normalizeSizeOverride: odd dims round down to even", sz && sz.width === 1080 && sz.height === 1920, sz);
+sz = normalizeSizeOverride("2560", "1440.4");
+check("normalizeSizeOverride: numeric strings accepted", sz && sz.width === 2560 && sz.height === 1440, sz);
+check("normalizeSizeOverride: absent/garbage/out-of-range is null (sequence size wins)",
+  normalizeSizeOverride(null, null) === null && normalizeSizeOverride(undefined, undefined) === null &&
+  normalizeSizeOverride("x", 1080) === null && normalizeSizeOverride(1920, 8) === null &&
+  normalizeSizeOverride(9000, 1080) === null, null);
+check("fmtTokens: sub-1k literal, k with one decimal, big k rounded",
+  fmtTokens(950) === "950" && fmtTokens(18432) === "18.4k" && fmtTokens(123456) === "123k" && fmtTokens(21000) === "21k",
+  [fmtTokens(950), fmtTokens(18432), fmtTokens(123456), fmtTokens(21000)]);
+check("fmtTokens: zero/garbage is null", fmtTokens(0) === null && fmtTokens("x") === null, null);
+check("fmtElapsed: seconds then minutes", fmtElapsed(45000) === "45s" && fmtElapsed(192000) === "3m 12s", [fmtElapsed(45000), fmtElapsed(192000)]);
+check("fmtElapsed: garbage is null", fmtElapsed("x") === null && fmtElapsed(-5) === null, null);
 
 /* ---------- kit: styles registry + skill ---------- */
 const styles = listStyles();

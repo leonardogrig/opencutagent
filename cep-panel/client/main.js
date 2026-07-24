@@ -2276,6 +2276,8 @@
       // playhead follow (picker mode only):
       follow: true, pollTimer: null, pollInFlight: false, currentIndex: null,
       vTracks: null,        // the sequence's real video track count (from the playhead poll)
+      // output size: "seq" mirrors the sequence; presets/custom pin an explicit size
+      size: "seq", orient: "h", customW: "", customH: "",
       activityEl: null, activityText: null, // the in-chat "working" bubble (one at most)
     };
     var POLL_MS = 300;
@@ -2283,6 +2285,7 @@
 
     function cache() {
       ["animStyle", "animStyleWrap", "animBgCtl", "animTrack", "animTrackWrap", "animFollow", "animBackBtn",
+       "animSize", "animSizeWrap", "animOrientCtl", "animSizeCustom", "animW", "animH",
        "animSelect", "animStatus", "animJobs", "animSegs",
        "animSelSummary", "animCreateBtn", "animChatWrap", "animJobInfo", "animChatLog",
        "animAttach", "animText", "animSendBtn", "animStopBtn", "animImgBtn", "animFile"]
@@ -2294,6 +2297,10 @@
         state.background = window.localStorage.getItem("editagent.anim.bg") === "transparent" ? "transparent" : "solid";
         state.track = window.localStorage.getItem("editagent.anim.track") || "1";
         state.follow = window.localStorage.getItem("editagent.anim.follow") !== "0";
+        state.size = window.localStorage.getItem("editagent.anim.size") || "seq";
+        state.orient = window.localStorage.getItem("editagent.anim.orient") === "v" ? "v" : "h";
+        state.customW = window.localStorage.getItem("editagent.anim.w") || "";
+        state.customH = window.localStorage.getItem("editagent.anim.h") || "";
       } catch (e) {}
     }
     function persistPrefs() {
@@ -2302,6 +2309,10 @@
         window.localStorage.setItem("editagent.anim.bg", state.background);
         window.localStorage.setItem("editagent.anim.track", state.track);
         window.localStorage.setItem("editagent.anim.follow", state.follow ? "1" : "0");
+        window.localStorage.setItem("editagent.anim.size", state.size);
+        window.localStorage.setItem("editagent.anim.orient", state.orient);
+        window.localStorage.setItem("editagent.anim.w", el.animW ? el.animW.value : state.customW);
+        window.localStorage.setItem("editagent.anim.h", el.animH ? el.animH.value : state.customH);
       } catch (e) {}
     }
     function setStatus(text, isErr) { el.animStatus.textContent = text || ""; el.animStatus.className = "statusbar" + (isErr ? " err" : ""); }
@@ -2456,6 +2467,7 @@
           '<span class="anim-job-name">' + esc(j.title || j.id) + "</span>" +
           '<span class="anim-job-meta">' + (j.durationSec != null ? j.durationSec.toFixed(1) + "s" : "") +
           " · " + esc(j.background === "transparent" ? "no bg" : "solid") +
+          (j.sizeSource === "custom" ? " · " + j.width + "x" + j.height : "") +
           (j.createdAt ? " · " + fmtAgo(j.createdAt) : "") + "</span>" +
           '<span class="seg-badges">' + jobBadge(j) + "</span>" +
           (confirming
@@ -2547,6 +2559,36 @@
       el.animTrack.value = state.track;
     }
 
+    /* ---- output size (Sequence / preset + orientation / custom W x H) ---- */
+    var SIZE_PRESETS = { "4k": [3840, 2160], qhd: [2560, 1440], fhd: [1920, 1080], hd: [1280, 720] };
+    // Selected pill + which sub-controls show are JS-driven (CEP has no :has()).
+    function syncSizeCtl() {
+      el.animSize.value = state.size;
+      if (el.animSize.value !== state.size) { state.size = "seq"; el.animSize.value = "seq"; }
+      var inputs = el.animOrientCtl.querySelectorAll("input[name=animOrient]"), i;
+      for (i = 0; i < inputs.length; i++) {
+        inputs[i].checked = inputs[i].value === state.orient;
+        inputs[i].parentNode.className = "segopt" + (inputs[i].checked ? " on" : "");
+      }
+      var inChat = !!state.activeJobId;
+      el.animOrientCtl.style.display = !inChat && SIZE_PRESETS[state.size] ? "" : "none";
+      el.animSizeCustom.style.display = !inChat && state.size === "custom" ? "" : "none";
+    }
+    // The size to send with animCreate: null = match the sequence (server default),
+    // {width,height} = pinned, {error} = bad custom input (block the create).
+    function chosenSize() {
+      if (state.size === "custom") {
+        var w = Math.round(parseFloat(el.animW.value)), h = Math.round(parseFloat(el.animH.value));
+        if (!isFinite(w) || !isFinite(h) || w < 16 || h < 16 || w > 8192 || h > 8192) {
+          return { error: "Enter a custom size between 16 and 8192 pixels for both width and height." };
+        }
+        return { width: w - (w % 2), height: h - (h % 2) };
+      }
+      var p = SIZE_PRESETS[state.size];
+      if (!p) return null;
+      return state.orient === "v" ? { width: p[1], height: p[0] } : { width: p[0], height: p[1] };
+    }
+
     /* ---- chat rendering ----
      * Editors see a clean conversation: their messages, the agent's FINAL reply
      * per turn, and system notices. Tool calls and intermediate narration are
@@ -2559,6 +2601,8 @@
           "</div></div>";
       }
       if (m.role === "assistant") {
+        // A turn that rendered hides its prose: the placed notice is the reply.
+        if (m.hidden || !String(m.text || "").replace(/^\s+|\s+$/g, "")) return "";
         return '<div class="anim-msg assistant"><div class="anim-bubble">' + esc(m.text) + "</div></div>";
       }
       // system notices (created / placed / errors); a placed notice seeks on click
@@ -2573,7 +2617,8 @@
       el.animJobInfo.innerHTML =
         '<span class="anim-job-name">' + esc(job.title || job.id) + "</span>" +
         '<span class="anim-job-meta">' + job.durationSec.toFixed(1) + "s · " +
-        esc(job.background === "transparent" ? "no bg" : "solid bg") + " · " + esc(job.style) + "</span>" +
+        esc(job.background === "transparent" ? "no bg" : "solid bg") + " · " + esc(job.style) +
+        (job.sizeSource === "custom" ? " · " + job.width + "x" + job.height : "") + "</span>" +
         '<span class="seg-badges">' + jobBadge(job, true) + "</span>" +
         (job.outDir
           ? '<button class="icon-btn anim-folder" data-act="folder" aria-label="Open the animation folder" data-tip="Opens this animation\'s folder (chat, rendered clips, sources) next to your Premiere project.">' +
@@ -2669,10 +2714,13 @@
       el.animSelect.className = "hidden";
       el.animChatWrap.className = "anim-chatwrap";
       el.animBackBtn.style.display = "";
-      // Style/background/track are fixed at creation — inside a chat they're just noise.
+      // Style/background/track/size are fixed at creation — inside a chat they're just noise.
       el.animStyleWrap.style.display = "none";
       el.animBgCtl.style.display = "none";
       el.animTrackWrap.style.display = "none";
+      el.animSizeWrap.style.display = "none";
+      el.animOrientCtl.style.display = "none";
+      el.animSizeCustom.style.display = "none";
       stopPoll(); // no segment list to highlight in chat mode
       renderChat();
       updateButtons();
@@ -2686,17 +2734,23 @@
       el.animStyleWrap.style.display = "";
       el.animBgCtl.style.display = "";
       el.animTrackWrap.style.display = "";
+      el.animSizeWrap.style.display = "";
+      syncSizeCtl(); // orient/custom visibility depends on the chosen size
       setChatStatus("");
       renderSegs(); renderJobs(); updateButtons();
       if (activeTab === "anim") startPoll();
     }
     function create() {
       if (!connected() || state.busy || !state.selection.length) return;
+      var size = chosenSize();
+      if (size && size.error) { toast(size.error, "error"); return; }
       state.busy = true; updateButtons();
       setLoading(el.animCreateBtn, true, "Creating…");
       setStatus("Creating the animation…");
       var p = AI.params();
-      callServer("animCreate", { segments: state.selection, style: state.style, background: state.background, track: parseInt(state.track, 10), model: p.model, effort: p.effort }, function (m) { setStatus(m); }).then(
+      var params = { segments: state.selection, style: state.style, background: state.background, track: parseInt(state.track, 10), model: p.model, effort: p.effort };
+      if (size) { params.width = size.width; params.height = size.height; }
+      callServer("animCreate", params, function (m) { setStatus(m); }).then(
         function (res) {
           state.busy = false;
           setLoading(el.animCreateBtn, false, "Start animation chat");
@@ -2840,8 +2894,13 @@
       el.animImgBtn.disabled = state.busy;
       el.animStyle.disabled = !!state.activeJobId;
       el.animTrack.disabled = !!state.activeJobId || state.busy;
+      el.animSize.disabled = !!state.activeJobId || state.busy;
+      el.animW.disabled = !!state.activeJobId || state.busy;
+      el.animH.disabled = !!state.activeJobId || state.busy;
       var inputs = el.animBgCtl.querySelectorAll("input"), i;
       for (i = 0; i < inputs.length; i++) inputs[i].disabled = !!state.activeJobId || state.busy;
+      var oInputs = el.animOrientCtl.querySelectorAll("input");
+      for (i = 0; i < oInputs.length; i++) oInputs[i].disabled = !!state.activeJobId || state.busy;
       updateSelSummary();
     }
     function onShow() {
@@ -2894,6 +2953,17 @@
       });
       renderTrackOptions();
       el.animTrack.addEventListener("change", function () { state.track = el.animTrack.value; persistPrefs(); });
+      el.animW.value = state.customW;
+      el.animH.value = state.customH;
+      syncSizeCtl();
+      el.animSize.addEventListener("change", function () { state.size = el.animSize.value; persistPrefs(); syncSizeCtl(); });
+      el.animOrientCtl.addEventListener("change", function () {
+        var checked = el.animOrientCtl.querySelector("input:checked");
+        state.orient = checked && checked.value === "v" ? "v" : "h";
+        persistPrefs(); syncSizeCtl();
+      });
+      el.animW.addEventListener("change", persistPrefs);
+      el.animH.addEventListener("change", persistPrefs);
       el.animFollow.checked = state.follow;
       el.animFollow.addEventListener("change", function () { state.follow = el.animFollow.checked; persistPrefs(); });
       el.animCreateBtn.addEventListener("click", create);

@@ -661,10 +661,23 @@ button.reinsert:hover:not(:disabled) { background: var(--accent-hover); border-c
    Two stacked modes inside one pane: #animSelect (picker) and .anim-chatwrap
    (chat) — the module swaps .hidden between them. */
 .anim { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.anim-bar { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-3); flex: none; }
+.anim-bar { display: flex; align-items: center; gap: var(--sp-2) var(--sp-3); padding: var(--sp-3); flex: none; flex-wrap: wrap; }
 .anim-bar .grow { flex: 1; }
 .anim-style { display: flex; align-items: center; gap: var(--sp-2); color: var(--text-secondary); font-size: var(--fs-sm); }
 .anim-style select { min-width: 110px; }
+#animSize { min-width: 96px; }
+/* Custom output size: two compact W x H fields next to the Size select */
+.anim-size-custom { gap: var(--sp-1); }
+.anim-size-custom input {
+  width: 62px; min-width: 0;
+  background: var(--surface-1); border: 1px solid var(--border-default);
+  border-radius: var(--r-md); padding: var(--sp-1) var(--sp-2);
+  color: var(--text-primary); font: inherit; font-variant-numeric: tabular-nums;
+  outline: none; -moz-appearance: textfield;
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.anim-size-custom input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
+.anim-size-custom input::-webkit-outer-spin-button, .anim-size-custom input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .segctl-sm { padding: 2px; }
 .segctl-sm .segopt span { padding: 3px 10px; font-size: var(--fs-sm); }
 

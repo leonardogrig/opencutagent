@@ -12,7 +12,7 @@ import { basename } from "node:path";
 import { ensureKit, listStyles, readStyleSkill } from "./kit.js";
 import {
   createJob, discardJob, loadJobsFrom, readChat, appendChat, saveJob, snapshotScene,
-  readRenderSignal, saveRefImage, animTrackIndex,
+  readRenderSignal, saveRefImage, animTrackIndex, fmtTokens, fmtElapsed,
 } from "./jobs.js";
 import { runChatTurn } from "./chat.js";
 import { renderJob, renderScale } from "./render.js";
@@ -67,6 +67,7 @@ function jobSummary(job) {
     fps: job.fps,
     width: job.width,
     height: job.height,
+    sizeSource: job.sizeSource || "sequence",
     durationInFrames: job.durationInFrames,
     durationSec: round3(job.durationInFrames / job.fps),
     range: job.range,
@@ -121,20 +122,23 @@ async function placeRender(ctx, job, renderInfo, onStatus) {
 }
 
 /** Render the signaled version and put it on the timeline; updates + persists the job. */
-async function renderAndPlace(ctx, job, kitPath, signal, token) {
+async function renderAndPlace(ctx, job, kitPath, signal, token, stats = null) {
   const status = (text) => pushEvent(ctx, job.id, { kind: "status", text });
   // Match the LIVE sequence's resolution, even when the job's captured size is
   // wrong or the sequence changed: same-aspect mismatches render with --scale,
   // different-aspect mismatches get a plain warning instead of a distorted clip.
+  // A user-pinned size (sizeSource "custom") is deliberate — never rescale it.
   let scale = 1;
   let scaleWarning = null;
-  try {
-    const timeline = await getTimeline(ctx);
-    const s = renderScale(job, timeline.sequence && timeline.sequence.frameSizeHorizontal, timeline.sequence && timeline.sequence.frameSizeVertical);
-    scale = s.scale;
-    scaleWarning = s.warning;
-    if (s.outWidth && s.scale !== 1) status(`Rendering at the sequence's ${s.outWidth}p width…`);
-  } catch { /* host unreachable for the size check: render at the job's own size */ }
+  if (job.sizeSource !== "custom") {
+    try {
+      const timeline = await getTimeline(ctx);
+      const s = renderScale(job, timeline.sequence && timeline.sequence.frameSizeHorizontal, timeline.sequence && timeline.sequence.frameSizeVertical);
+      scale = s.scale;
+      scaleWarning = s.warning;
+      if (s.outWidth && s.scale !== 1) status(`Rendering at the sequence's ${s.outWidth}p width…`);
+    } catch { /* host unreachable for the size check: render at the job's own size */ }
+  }
   const renderInfo = await renderJob({ kitDirPath: kitPath, job, version: signal.version, scale, token, onProgress: status });
   const placeInfo = await placeRender(ctx, job, renderInfo, status);
   if (signal.title) job.title = signal.title; // the agent named what it built
@@ -143,10 +147,20 @@ async function renderAndPlace(ctx, job, kitPath, signal, token) {
   job.renders.push({ version: signal.version, file: renderInfo.file, ts: Date.now(), notes: signal.notes || "" });
   job.placed = { ...placeInfo, file: renderInfo.file, version: signal.version };
   saveJob(job);
+  // "(18.4k tokens, 3m 12s)": what the turn cost and how long it took, message
+  // sent to clip placed.
+  const statBits = [];
+  if (stats) {
+    const t = fmtTokens(stats.tokens);
+    if (t) statBits.push(t + " tokens");
+    const e = fmtElapsed(Date.now() - stats.startedAt);
+    if (e) statBits.push(e);
+  }
+  const stat = statBits.length ? ` (${statBits.join(", ")})` : "";
   const text =
     (placeInfo.ok
-      ? `Animation v${signal.version} placed on V${placeInfo.trackIndex + 1} at ${mmss(placeInfo.targetSeconds)}.`
-      : `Animation v${signal.version} rendered, but Premiere didn't confirm it landed. Check the timeline.`) +
+      ? `Animation v${signal.version} placed on V${placeInfo.trackIndex + 1} at ${mmss(placeInfo.targetSeconds)}${stat}.`
+      : `Animation v${signal.version} rendered${stat}, but Premiere didn't confirm it landed. Check the timeline.`) +
     (scaleWarning ? " " + scaleWarning : "") +
     (placeInfo.warning ? " " + placeInfo.warning : "");
   appendChat(job, { role: "system", kind: "placed", text, targetSeconds: placeInfo.targetSeconds, trackIndex: placeInfo.trackIndex });
@@ -201,6 +215,8 @@ async function animCreate(params, helpers, ctx) {
       style: params.style,
       background: params.background,
       trackIndex: params.track,
+      width: params.width,
+      height: params.height,
       projectDir: dir,
     }, kitPath);
     a.jobs.set(job.id, job);
@@ -255,9 +271,14 @@ async function animChat(params, _helpers, ctx) {
 
     job.sessionId = turn.sessionId;
     const assistantText = (turn.text && turn.text.trim()) || streamed;
-    appendChat(job, { role: "assistant", text: assistantText, tools });
+    // When this turn triggered a render, the placed notice IS the reply: the
+    // agent's final prose is persisted hidden and never shown as a bubble.
+    const signal = readRenderSignal(job, kitPath);
+    const willRender = !!(signal && signal.version > (job.lastRenderedVersion || 0));
+    appendChat(job, { role: "assistant", text: assistantText, tools, ...(willRender ? { hidden: true } : {}) });
     snapshotScene(job, kitPath);
     saveJob(job);
+    const tokens = ((turn.usage && turn.usage.input_tokens) || 0) + ((turn.usage && turn.usage.output_tokens) || 0);
     recordUsage({
       type: "claude",
       purpose: "Animation chat",
@@ -269,21 +290,20 @@ async function animChat(params, _helpers, ctx) {
       outputTokens: (turn.usage && turn.usage.output_tokens) || 0,
       costUsd: 0, // subscription
     });
-    pushEvent(ctx, job.id, { kind: "assistantDone", text: assistantText, tools });
+    pushEvent(ctx, job.id, { kind: "assistantDone", text: willRender ? "" : assistantText, tools });
 
     // The agent signals "ready" by bumping render.json — render + place now.
     let placedMsg = null;
-    const signal = readRenderSignal(job, kitPath);
-    if (signal && signal.version > (job.lastRenderedVersion || 0)) {
+    if (willRender) {
       if (token.aborted) throw new Error("Cancelled");
-      const done = await renderAndPlace(ctx, job, kitPath, signal, token);
+      const done = await renderAndPlace(ctx, job, kitPath, signal, token, { tokens, startedAt });
       placedMsg = done.text;
     }
 
     pushEvent(ctx, job.id, { kind: "turnDone" });
     return {
       ok: turn.ok,
-      text: assistantText,
+      text: willRender ? "" : assistantText,
       tools,
       placed: placedMsg,
       sessionId: job.sessionId,
