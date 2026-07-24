@@ -2654,13 +2654,62 @@
     }
 
     /* ---- attachments ---- */
+    // Hovering a pill pops a preview of the image above it, so the user can tell
+    // which attachment is which. Same conventions as the [data-tip] tooltips: one
+    // shared fixed-position box, 400ms delay, viewport-clamped, flips when cramped.
+    // The image data is already in memory (it's what gets sent), so this only
+    // costs a transient decode.
+    var peekEl = null, peekImg = null, peekTimer = null, peekPill = null;
+    function hidePeek() {
+      clearTimeout(peekTimer); peekTimer = null; peekPill = null;
+      if (peekEl) peekEl.className = "imgpeek";
+    }
+    function placePeek(pill) {
+      var r = pill.getBoundingClientRect(), w = peekEl.offsetWidth, h = peekEl.offsetHeight;
+      var x = clamp(r.left + r.width / 2 - w / 2, 6, Math.max(6, window.innerWidth - w - 6));
+      var y = r.top - h - 8; // above by default: the pill row sits at the panel's bottom
+      if (y < 6) y = r.bottom + 8;
+      peekEl.style.left = x + "px"; peekEl.style.top = y + "px";
+    }
+    function showPeekFor(pill) {
+      var im = state.pendingImgs[parseInt(pill.getAttribute("data-img"), 10)];
+      if (!im) return;
+      if (!peekEl) {
+        peekEl = document.createElement("div");
+        peekEl.className = "imgpeek";
+        peekImg = document.createElement("img");
+        peekImg.alt = "";
+        peekEl.appendChild(peekImg);
+        document.body.appendChild(peekEl);
+      }
+      var src = "data:" + (im.type || "image/png") + ";base64," + im.data;
+      var reveal = function () { if (peekPill !== pill) return; placePeek(pill); peekEl.className = "imgpeek show"; };
+      if (peekImg.src === src && peekImg.complete) { reveal(); return; }
+      peekImg.onload = reveal; // wait for the decode so the box measures at its real size
+      peekImg.src = src;
+    }
     function renderAttach() {
+      hidePeek(); // the pill nodes are about to be replaced
       var html = "", i;
       for (i = 0; i < state.pendingImgs.length; i++) {
         html += '<span class="anim-pill" data-img="' + i + '">' + esc(state.pendingImgs[i].name) + '<span class="anim-pill-x">×</span></span>';
       }
       el.animAttach.innerHTML = html;
-      el.animAttach.style.display = html ? "" : "none";
+      // "flex", not "": the stylesheet hides .anim-attach with display:none, so
+      // clearing the inline style would leave the pills invisible.
+      el.animAttach.style.display = html ? "flex" : "none";
+    }
+    // Pasted screenshots all arrive named "image.png"; suffix duplicates so every
+    // pill (and its remove ×) is unambiguous. Mirrors the server's refs/ naming.
+    function uniqueImgName(name) {
+      var base = String(name || "image.png"), out = base, n = 1, taken = {}, i;
+      for (i = 0; i < state.pendingImgs.length; i++) taken[state.pendingImgs[i].name] = 1;
+      var dot = base.lastIndexOf(".");
+      while (taken[out]) {
+        out = dot > 0 ? base.slice(0, dot) + "-" + n + base.slice(dot) : base + "-" + n;
+        n++;
+      }
+      return out;
     }
     function addFiles(files) {
       var added = 0, i;
@@ -2672,7 +2721,7 @@
           var r = new FileReader();
           r.onload = function () {
             var s = String(r.result || "");
-            state.pendingImgs.push({ name: f.name, data: s.slice(s.indexOf(",") + 1) });
+            state.pendingImgs.push({ name: uniqueImgName(f.name), type: f.type, data: s.slice(s.indexOf(",") + 1) });
             renderAttach(); updateButtons();
           };
           r.readAsDataURL(f);
@@ -2981,6 +3030,20 @@
         state.pendingImgs.splice(parseInt(pill.getAttribute("data-img"), 10), 1);
         renderAttach(); updateButtons();
       });
+      el.animAttach.addEventListener("mouseover", function (ev) {
+        var pill = ev.target.closest ? ev.target.closest(".anim-pill") : null;
+        if (pill === peekPill) return;
+        hidePeek();
+        if (!pill) return;
+        peekPill = pill;
+        peekTimer = setTimeout(function () { if (peekPill === pill) showPeekFor(pill); }, 400);
+      });
+      el.animAttach.addEventListener("mouseout", function (ev) {
+        // relatedTarget null = pointer left the page entirely (into Premiere)
+        if (!ev.relatedTarget || !el.animAttach.contains(ev.relatedTarget)) hidePeek();
+      });
+      document.addEventListener("mousedown", hidePeek, true);
+      window.addEventListener("blur", hidePeek);
       // Drag-and-drop reference images onto the chat.
       el.animChatWrap.addEventListener("dragover", function (e) { e.preventDefault(); el.animChatWrap.classList.add("dragging"); });
       el.animChatWrap.addEventListener("dragleave", function () { el.animChatWrap.classList.remove("dragging"); });
@@ -2988,6 +3051,19 @@
         e.preventDefault();
         el.animChatWrap.classList.remove("dragging");
         if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+      });
+      // Cmd+V / Ctrl+V pastes clipboard images into the chat. Document-level so it
+      // works wherever focus sits, gated to the open chat; text pastes untouched.
+      document.addEventListener("paste", function (e) {
+        if (activeTab !== "anim" || !state.activeJobId) return;
+        var items = (e.clipboardData && e.clipboardData.items) || [], files = [], i, f;
+        for (i = 0; i < items.length; i++) {
+          if (items[i].kind === "file" && /^image\//.test(items[i].type || "")) {
+            f = items[i].getAsFile();
+            if (f) files.push(f);
+          }
+        }
+        if (files.length) { e.preventDefault(); addFiles(files); }
       });
     }
 

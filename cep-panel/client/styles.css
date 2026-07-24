@@ -792,6 +792,15 @@ button.reinsert:hover:not(:disabled) { background: var(--accent-hover); border-c
 }
 .anim-pill-x { cursor: pointer; color: var(--text-tertiary); font-size: var(--fs-md); line-height: 1; }
 .anim-pill-x:hover { color: var(--danger-text); }
+/* Hover preview of an attached image: one shared fixed box, anchored above the pill. */
+.imgpeek {
+  position: fixed; z-index: 100;
+  background: var(--surface-4); border: 1px solid var(--border-default); border-radius: var(--r-md);
+  box-shadow: var(--shadow-overlay); padding: var(--sp-1);
+  pointer-events: none; opacity: 0; transition: opacity var(--dur) var(--ease);
+}
+.imgpeek.show { opacity: 1; }
+.imgpeek img { display: block; max-width: 220px; max-height: 220px; border-radius: var(--r-sm); }
 .anim-input-row { display: flex; align-items: flex-end; gap: var(--sp-2); }
 .anim-input-row textarea {
   flex: 1; resize: none; min-height: 38px; max-height: 120px;

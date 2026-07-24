@@ -1,11 +1,12 @@
 import { Config } from "@remotion/cli/config";
 
 // Applies to Remotion Studio + the `remotion` CLI only (NOT the @remotion/renderer Node API).
-// PNG (lossless) intermediate frames + a low CRF keep fine hand-drawn text crisp
-// through camera motion (JPEG intermediates + high CRF mangle thin strokes on the
-// zoom). Quality over file size — these clips land on a Premiere timeline.
+// PNG (lossless) intermediate frames keep fine hand-drawn text crisp through
+// camera motion (JPEG intermediates mangle thin strokes on the zoom).
+// NO Config.setCrf here: a global CRF makes every ProRes render throw
+// ("prores" does not support --crf) — transparent jobs render ProRes 4444.
+// The server passes --crf=14 explicitly on its h264 renders instead.
 Config.setVideoImageFormat("png");
-Config.setCrf(14);
 Config.setOverwriteOutput(true);
 Config.setStillImageFormat("png");
 

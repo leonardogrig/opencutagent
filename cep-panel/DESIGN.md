@@ -148,7 +148,9 @@ primary buttons keep crisp dark labels (white-on-Ember is only ~3.1:1).
   10:50 (18.4k tokens, 3m 12s). Click to view.", success-green, underline on
   hover) and the job-header `.badge.seekable` carry `data-seek` → clicking moves
   Premiere's playhead to the animation's start. Composer `.anim-inputbox`:
-  attach pills (`.anim-pill` + ×), textarea (Enter sends, Shift+Enter newline),
+  attach pills (`.anim-pill` + ×; hovering a pill pops an `.imgpeek` image
+  preview above it — tipbox conventions, max 220px), textarea (Enter sends,
+  Shift+Enter newline),
   single-primary Send that swaps to a danger Stop while the agent works. Top
   `.anim-bar` (flex-wrap): Style select, a `.segctl-sm` Solid bg / No bg
   control, Track select, and the **output Size group** — `#animSize` select
