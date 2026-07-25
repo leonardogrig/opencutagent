@@ -16,7 +16,7 @@
           OPENCUTAGENT
         </span>
         <span class="head-right">
-          <span class="conn"><span id="dot" class="dot"></span><span id="connText">Starting…</span></span>
+          <span class="conn" id="conn"><span id="dot" class="dot"></span><span id="connText">Starting…</span></span>
           <button id="aiConfigBtn" class="icon-btn" data-tip="Settings: pick the Claude model for the AI buttons, add your ElevenLabs API key, pair the panel with a Claude Code chat, or clear the cache." aria-haspopup="true" aria-expanded="false">
             <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
             <svg class="ic ic-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
@@ -42,7 +42,7 @@
           </label>
           <div id="cloudHint" class="pop-hint"></div>
         </div>
-        <div class="pop-sec">
+        <div class="pop-sec" id="configSec">
           <div class="pop-title">Config</div>
           <div id="aiCtls" class="pop-group">
             <!-- value = tier alias (always valid, auto-resolves to the newest of that tier);
@@ -72,7 +72,7 @@
           </label>
           <div id="aiHint" class="pop-hint">The “Suggest threshold” and “Analyze w/ Claude” buttons run Claude headlessly here, on your Claude subscription. Turn on Sync to drive OpenCutAgent from a Claude Code chat instead.</div>
         </div>
-        <div class="pop-sec">
+        <div class="pop-sec" id="sttSec">
           <div class="pop-title">Transcription</div>
           <label class="pop-row"><span>Model</span>
             <select id="sttModel">
@@ -89,7 +89,7 @@
             <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
             <span class="lbl">Clear cache</span>
           </button>
-          <div class="pop-hint">Transcripts and audio scans are cached per source file so reloads are free. Clearing means the next Load re-transcribes (ElevenLabs credits).</div>
+          <div class="pop-hint" id="cacheHint">Transcripts and audio scans are cached per source file so reloads are free. Clearing means the next Load re-transcribes (ElevenLabs credits).</div>
         </div>
         <div class="pop-sec" id="elevenSec">
           <div class="pop-title">ElevenLabs</div>
@@ -100,14 +100,14 @@
           </button>
           <div class="pop-hint">Transcription for the Retakes tab runs on ElevenLabs Scribe ($0.22 per audio hour, billed to your ElevenLabs account).</div>
         </div>
-        <div class="pop-sec">
+        <div class="pop-sec" id="usageSec">
           <div class="pop-title">Usage</div>
           <button id="usageBtn" class="sm" data-tip="Every AI run this project has made: ElevenLabs transcription (billed per audio minute) and headless Claude analyses (included in your Claude subscription).">
             <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>
             <span class="lbl">View AI usage log</span>
           </button>
         </div>
-        <div class="pop-sec">
+        <div class="pop-sec" id="advSec">
           <button id="advToggle" class="adv-toggle" aria-expanded="false">
             <svg class="ic ic-sm adv-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
             <span>Advanced</span>

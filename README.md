@@ -247,6 +247,33 @@ OpenCutAgent is built for the common case: talking-head footage on a normal A/V 
 
 The transcription engine is pluggable (Scribe v2 today); the engine interface in `server/transcription/transcribe.js` accepts a Deepgram/Whisper drop-in.
 
+## Before you rely on it: disclaimers, data, and third-party licenses
+
+**Keep backups.** OpenCutAgent razors, deletes and moves clips on your live timeline, creates new sequences, and can overwrite footage on a chosen video track. Some of that cannot be undone in a single step. Your original camera files are never modified or deleted, but project structure and edit decisions are. Work on a copy of anything you cannot afford to lose.
+
+**Check the AI's work.** Transcription misrecognises words. Retake analysis keeps takes it should cut and cuts takes it should keep. Silence detection can trim quiet speech. Review every automated change before you deliver work to anyone. Nothing here is a guarantee of accuracy or fitness for your purpose.
+
+**No warranty.** The software is provided as-is, without warranty of any kind, and the author is not liable for lost or damaged projects, sequences, renders or media. See [LICENSE](LICENSE).
+
+**What leaves your machine.** Your video files, project file and rendered animations never leave your computer in either mode. What does leave, and where it goes, depends on the mode:
+
+| Mode | What is sent | To whom |
+| --- | --- | --- |
+| Self-hosted (own keys) | Audio of the timeline sections you transcribe; transcript text and your prompts | Directly to *your* ElevenLabs account and *your* Claude login. Nothing reaches the author. |
+| Cloud (Pro) | The same audio and text | The OpenCutAgent proxy, then onward to its transcription and AI providers. See the hosted [Privacy Policy](https://opencutagent.com/privacy) and [Terms](https://opencutagent.com/terms). |
+
+Transcripts and audio extracts are cached on your own disk under `.cache/`. Clear them any time from the panel's gear menu (Storage, then Clear cache).
+
+**Third-party licenses are your responsibility.**
+
+- **Adobe Premiere Pro**: you need your own Adobe license. OpenCutAgent is an independent project, not affiliated with, endorsed by or sponsored by Adobe. Adobe and Premiere Pro are trademarks of Adobe Inc.
+- **Remotion** (the Animation tab renders locally with it): free for individuals, non-profits and companies of three people or fewer. **Larger for-profit companies need their own Remotion license.** That agreement is between you and Remotion; it is not granted by this project and no fee here covers it. See [remotion.dev/docs/license](https://www.remotion.dev/docs/license).
+- **FFmpeg**: used for audio analysis and encoding under its own open-source license.
+- **ElevenLabs and Anthropic**: in self-hosted mode you use your own accounts, under their terms.
+- Other names (Claude, Anthropic, ElevenLabs, OpenRouter, Remotion, n8n) are trademarks of their respective owners and are used only to describe compatibility.
+
+**The animation assistant runs a coding agent on your machine.** It writes and runs code in its own workspace (`~/.opencutagent/animation-kit`) to build each animation. Only enable it on a machine where that is acceptable to you.
+
 ## Docs
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the pieces talk, the fast-apply ladder, the design rules.

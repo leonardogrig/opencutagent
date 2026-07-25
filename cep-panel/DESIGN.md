@@ -58,6 +58,15 @@ primary buttons keep crisp dark labels (white-on-Ember is only ~3.1:1).
   "if unsure, don't change" `.adv-warn` hint). Click-away/Esc close it.
   Rationale: model choice atop a tab read as "this whole tab is AI" when only
   the two explicit AI actions use it.
+  **Cloud vs self-hosted visibility**: in cloud mode (the default, Account
+  section's Self-hosted switch off) the popover shows ONLY **Account** and
+  **Storage** — Config, Transcription, ElevenLabs, Usage and Advanced are all
+  self-hosted concepts and are hidden by `reflectCloud()` (ids `configSec`,
+  `sttSec`, `elevenSec`, `usageSec`, `advSec`; the Storage hint `cacheHint`
+  swaps its billing wording per mode). Hidden sections rely on the global
+  `[hidden] { display:none !important }` rule in BASE: author display rules
+  (`button` inline-flex, `.pop-sec` flex) otherwise beat the UA hidden rule
+  and "hidden" elements stay visible.
 - **ElevenLabs key modal** (`.modal.modal-sm`, ~400px) — opened from the
   popover, and AUTOMATICALLY whenever a transcription action needs a key that
   isn't set (pre-check via `keyStatus` on connect) or the server reports a
@@ -104,7 +113,10 @@ primary buttons keep crisp dark labels (white-on-Ember is only ~3.1:1).
 - **Feedback** — slim global indeterminate `#topbar` (driven by `setBusyBar`),
   typed toasts (`success`/`error`/`info`, colored bar + icon, via `toast(msg,type)`),
   skeleton shimmer rows during transcribe (`skeletonRows()`), richer empty states,
-  pulsing connection dot.
+  pulsing connection dot. The header connection pill (`#conn`) hides in cloud
+  mode while the link is healthy (`applyConn()` in main.js: the local helper
+  server is an implementation detail there); problem states like "Waiting for
+  server…" / "Not in Premiere" always show, in both modes.
 - **Layout compaction** — Remove Silences has ONE toolbar row (`.sil-bar`:
   Scan/Rescan + truncating status + `.viewctl` Follow/zoom); the legend keeps
   swatches + a "drag to pan · scroll to zoom" hint. The threshold block is a

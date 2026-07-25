@@ -47,10 +47,29 @@
   function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
   function $(id) { return document.getElementById(id); }
 
+  /* Node access. Current CEP builds ignore --mixed-context, so the page has NO
+   * bare require; Node lives on window.cep_node.require. Older builds with a
+   * working mixed context expose require directly. Null outside Premiere. */
+  var nodeRequire = (typeof require === "function") ? require
+    : (typeof cep_node !== "undefined" && cep_node && typeof cep_node.require === "function")
+      ? function (m) { return cep_node.require(m); }
+      : null;
+
+  var lastConn = { kind: "wait", text: "Starting…" };
   function setConn(kind, text) {
+    lastConn = { kind: kind, text: text };
+    applyConn();
+  }
+  // In cloud mode the local helper server is an implementation detail (the
+  // panel auto-starts it), so a healthy link shows nothing; problem states
+  // (Waiting for server, Not in Premiere) still surface in both modes.
+  // reflectCloud() re-applies this when the mode changes or loads.
+  function applyConn() {
     var dot = $("dot");
-    dot.className = "dot" + (kind === "ok" ? " ok" : kind === "bad" ? " bad" : "");
-    $("connText").textContent = text;
+    dot.className = "dot" + (lastConn.kind === "ok" ? " ok" : lastConn.kind === "bad" ? " bad" : "");
+    $("connText").textContent = lastConn.text;
+    var cloud = typeof AI !== "undefined" && AI && AI.cloudActive && AI.cloudActive();
+    $("conn").hidden = lastConn.kind === "ok" && cloud;
   }
   /* ---------- UI feedback helpers (loading buttons, global busy bar, typed toast) ----------
    * Dynamic-label buttons carry a <span class="lbl"> so we can swap the label WITHOUT
@@ -96,7 +115,7 @@
     // 1) Native "Save As" dialog (best UX in a CEP panel).
     if (wcep && wcep.fs && typeof wcep.fs.showSaveDialogEx === "function") {
       var initial = "";
-      try { initial = require("path").join(require("os").homedir(), defaultName); } catch (e) {}
+      try { initial = nodeRequire("path").join(nodeRequire("os").homedir(), defaultName); } catch (e) {}
       var res;
       try { res = wcep.fs.showSaveDialogEx("Save transcript", initial, [ext], defaultName); } catch (e) { res = null; }
       var p = res && res.data ? String(res.data) : "";
@@ -109,7 +128,7 @@
     }
     // 2) Node fs -> Desktop.
     try {
-      var fs = require("fs"), path = require("path"), os = require("os");
+      var fs = nodeRequire("fs"), path = nodeRequire("path"), os = nodeRequire("os");
       var dest = path.join(os.homedir(), "Desktop", defaultName);
       fs.writeFileSync(dest, text, "utf8");
       cb(true, dest, null); return;
@@ -175,7 +194,7 @@
   /* ---------- WebSocket + message routing ---------- */
   function readPort() {
     try {
-      var os = require("os"), fs = require("fs"), path = require("path");
+      var os = nodeRequire("os"), fs = nodeRequire("fs"), path = nodeRequire("path");
       var p = path.join(os.homedir(), ".editagent", "bridge-port");
       if (fs.existsSync(p)) { var v = parseInt(String(fs.readFileSync(p, "utf8")).replace(/\s+/g, ""), 10); if (v) return v; }
     } catch (e) {}
@@ -216,7 +235,7 @@
       // The panel is just a client — if nothing is serving the port, start the
       // Node server ourselves so "open the extension" is all the user needs.
       if (tryAutostartServer()) setConn("wait", "Starting server…");
-      else setConn("bad", "Waiting for server…");
+      else setConn("bad", spawnDiagnosis || "Waiting for server…");
       scheduleReconnect();
     };
     ws.onerror = function () {};
@@ -235,6 +254,7 @@
    * never ours to stop. */
   var serverChild = null;
   var lastSpawnAt = 0;
+  var spawnDiagnosis = null; // WHY auto-start can't work, shown in the header pill
 
   window.addEventListener("unload", function () {
     if (serverChild && serverChild.pid && !serverChild.killed) {
@@ -243,7 +263,7 @@
   });
 
   function resolveNodeBin(fs, path) {
-    var os = require("os");
+    var os = nodeRequire("os");
     var isWin = os.platform() === "win32";
     var list, i;
     if (isWin) {
@@ -270,7 +290,7 @@
     }
     for (i = 0; i < list.length; i++) { try { if (list[i] && fs.existsSync(list[i])) return list[i]; } catch (e) {} }
     try {
-      var cp = require("child_process");
+      var cp = nodeRequire("child_process");
       var w = isWin
         ? cp.execSync("where node", { encoding: "utf8" }).trim()
         : cp.execSync("command -v node", { encoding: "utf8", shell: "/bin/bash" }).trim();
@@ -279,28 +299,42 @@
     return null;
   }
 
-  // Returns true if it attempted to start the server this call.
+  // Returns true if it attempted to start the server this call. Failure paths
+  // record spawnDiagnosis so ws.onclose can show the REAL reason instead of
+  // clobbering it with the generic "Waiting for server…".
   function tryAutostartServer() {
     if (!cep) return false;
     if (serverChild && serverChild.pid && !serverChild.killed) return false; // already started one
     var now = Date.now();
     if (now - lastSpawnAt < 8000) return false; // throttle (don't spawn-storm while reconnecting)
     lastSpawnAt = now;
+    if (!nodeRequire) {
+      spawnDiagnosis = "Can't start the server (no Node in this panel). Run: npm start";
+      setConn("bad", spawnDiagnosis);
+      return false;
+    }
     try {
-      var fs = require("fs"), path = require("path"), cp = require("child_process");
-      var extPath = cep.getSystemPath("extension");          // <project>/cep-panel (may be a symlink)
+      var fs = nodeRequire("fs"), path = nodeRequire("path"), cp = nodeRequire("child_process");
+      // getSystemPath returns a percent-encoded file:// URI (e.g. .../Application%20Support/...),
+      // NOT a filesystem path. Undecoded, realpath/exists fail and auto-start dies
+      // with "Server not found". Strip the scheme (and the /C: slash on Windows), decode.
+      var extPath = String(cep.getSystemPath("extension")).replace(/^file:\/\//, "").replace(/^\/([A-Za-z]:)/, "$1");
+      try { extPath = decodeURI(extPath); } catch (e) {}
       try { extPath = fs.realpathSync(extPath); } catch (e) {} // CEP installs are often symlinked into .../CEP/extensions
       var root = path.dirname(extPath);                        // <project>
       var serverJs = path.join(root, "server", "index.js");
-      if (!fs.existsSync(serverJs)) { setConn("bad", "Server not found. Run: node server/index.js"); return false; }
+      if (!fs.existsSync(serverJs)) { spawnDiagnosis = "Server not found. Run: node server/index.js"; setConn("bad", spawnDiagnosis); return false; }
       var nodeBin = resolveNodeBin(fs, path);
-      if (!nodeBin) { setConn("bad", "Node not found. Run: node server/index.js"); return false; }
+      if (!nodeBin) { spawnDiagnosis = "Node not found. Run: node server/index.js"; setConn("bad", spawnDiagnosis); return false; }
       serverChild = cp.spawn(nodeBin, [serverJs], { cwd: root, stdio: "ignore" });
       serverChild.on("error", function () { serverChild = null; });
       serverChild.on("exit", function () { serverChild = null; });
+      spawnDiagnosis = null;
       return true;
     } catch (e) {
       serverChild = null;
+      spawnDiagnosis = "Can't start the server (" + (e && e.message ? e.message : "error") + "). Run: npm start";
+      setConn("bad", spawnDiagnosis);
       return false;
     }
   }
@@ -614,11 +648,20 @@
       var c = st.cloud;
       var self = c.mode === "self";
       el.selfHostToggle.checked = self;
-      // Self-hosted-only concepts disappear in cloud mode: pairing a local
-      // Claude Code chat (Sync) and the local ElevenLabs key both belong to
-      // the bring-your-own setup. reflect() re-derives the hint text.
+      // Self-hosted-only concepts disappear in cloud mode: model/effort (the
+      // backend enforces its own model policy), Sync with Claude Code, the
+      // transcription model, the ElevenLabs key, the local usage log and the
+      // Advanced env tunables all belong to the bring-your-own setup. Cloud
+      // mode keeps just Account + Storage. reflect() re-derives the hint text.
       if (el.syncRow) el.syncRow.hidden = !self;
       if (el.elevenSec) el.elevenSec.hidden = !self;
+      if (el.configSec) el.configSec.hidden = !self;
+      if (el.sttSec) el.sttSec.hidden = !self;
+      if (el.usageSec) el.usageSec.hidden = !self;
+      if (el.advSec) el.advSec.hidden = !self;
+      if (el.cacheHint) el.cacheHint.textContent = self
+        ? "Transcripts and audio scans are cached per source file so reloads are free. Clearing means the next Load re-transcribes (ElevenLabs credits)."
+        : "Transcripts and audio scans are cached per source file so reloads are free. Clearing means the next Load re-transcribes (uses your monthly quota).";
       reflect();
       if (!connected()) { el.cloudState.textContent = "server offline"; }
       else if (self) { el.cloudState.textContent = "Self-hosted"; }
@@ -633,6 +676,7 @@
         : (c.signedIn
           ? "AI, transcription and animations run on your OpenCutAgent account. Rendering and your footage stay on this machine."
           : "Sign in to run the AI features on your OpenCutAgent account: no API keys, no Claude install needed. Or turn on Self-hosted to use your own keys.");
+      applyConn(); // header "Connected" pill hides in cloud mode when healthy
     }
     function refreshCloud() {
       if (!el.cloudState) return;
@@ -790,7 +834,7 @@
        "keyState", "keyBtn", "keyModal", "keyCloseBtn", "keyReason", "keyInput", "keyError", "keySaveBtn",
        "advToggle", "advBody", "advList",
        "cloudState", "cloudAuthBtn", "cloudLinkWait", "cloudLinkCode", "cloudLinkCancel", "cloudUsageRow", "cloudUsage", "selfHostToggle", "cloudHint",
-       "syncRow", "elevenSec"]
+       "syncRow", "elevenSec", "configSec", "sttSec", "usageSec", "advSec", "cacheHint"]
         .forEach(function (id) { el[id] = $(id); });
       load(); reflect();
       reflectCloud(); // hide the self-hosted-only rows immediately (default mode is cloud)
@@ -830,6 +874,7 @@
       // Sync (pair with a local Claude Code chat) only exists in self-hosted
       // mode; in cloud mode the buttons always run through the account.
       sync: function () { return st.sync && st.cloud.mode === "self"; },
+      cloudActive: function () { return st.cloud.mode !== "self"; },
       params: function () { return { model: st.model, effort: st.effort, transcribe_model: st.sttModel }; },
       sttModel: function () { return st.sttModel; },
       keyMissing: keyMissing,
@@ -2329,7 +2374,7 @@
     function openFolder(dir) {
       if (!dir) return;
       try {
-        var cp = require("child_process"), os = require("os");
+        var cp = nodeRequire("child_process"), os = nodeRequire("os");
         var isWin = os.platform() === "win32";
         cp.spawn(isWin ? "explorer" : "open", [dir], { stdio: "ignore" });
       } catch (e) {
@@ -3087,5 +3132,5 @@
   // Debug handle for browser-based QA (the gallery/QA flow drives the real panel
   // outside CEP, where there's no server to push data): lets a console inject
   // segments/config, e.g. __editagent.Retake.applyReviewUpdate([...]).
-  window.__editagent = { Retake: Retake, Silence: Silence, AI: AI, Anim: Anim };
+  window.__editagent = { Retake: Retake, Silence: Silence, AI: AI, Anim: Anim, setConn: setConn };
 })();

@@ -81,6 +81,11 @@
 
 /* ============================ BASE ============================ */
 * { box-sizing: border-box; }
+/* The hidden ATTRIBUTE must always win: author display rules (button
+   inline-flex, .pop-sec flex, ...) otherwise beat the UA [hidden] rule and
+   "hidden" elements stay visible. No element pairs the attribute with an
+   inline style.display show, so !important is safe here. */
+[hidden] { display: none !important; }
 
 html, body {
   margin: 0;
