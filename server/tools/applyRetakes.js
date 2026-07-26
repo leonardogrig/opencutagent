@@ -1,4 +1,5 @@
 import { applyReview } from "../review.js";
+import { fmtDur } from "./util.js";
 
 export default {
   name: "ppro_apply_retakes",
@@ -25,10 +26,10 @@ export default {
         res.cutsMarked === 0
           ? "No segments are marked Cut" +
             (args.trim_excess === true ? " and no excess non-speech was found to trim." : "; nothing applied. Mark cuts with ppro_mark_retakes first.")
-          : `All ${res.cutsMarked} Cut segment(s) are already removed from the live timeline (~${res.alreadyGoneSec}s cut earlier). Nothing new to apply; re-run ppro_get_retake_segments if the list looks stale.`;
+          : `All ${res.cutsMarked} Cut segment(s) are already removed from the live timeline (~${fmtDur(res.alreadyGoneSec)} cut earlier). Nothing new to apply; re-run ppro_get_retake_segments if the list looks stale.`;
     } else {
       message =
-        `Applied ${res.applied}/${res.requested} cut(s) (~${res.appliedSec}s)${res.ripple ? " and closed the gaps" : " (gaps left in place)"}.` +
+        `Applied ${res.applied}/${res.requested} cut(s) (~${fmtDur(res.appliedSec)})${res.ripple ? " and closed the gaps" : " (gaps left in place)"}.` +
         (res.excessSpans ? ` Includes ${res.excessSpans} excess non-speech trim(s) inside keeps.` : "") +
         (res.alreadyGone ? ` ${res.alreadyGone} other cut(s) had already been removed.` : "") +
         " Review in Premiere; verify by re-reading the timeline.";

@@ -3,6 +3,7 @@
 // + the panel applyDecisions RPC path.
 import { markDecisions, applyReview, summarize, computeExcessRanges } from "../review.js";
 import { createRpcDispatcher } from "../rpc/index.js";
+import { fmtDur, fmtElapsed } from "../tools/util.js";
 
 let failures = 0;
 function check(label, cond, got) {
@@ -269,6 +270,23 @@ check("unknown RPC method rejected", threw);
     else process.env.EDITAGENT_AI_CHUNK = prevChunk;
   }
 }
+
+/* ---- duration formatting: raw seconds stop being readable past a minute ---- */
+check("fmtDur: sub-second keeps 2 decimals, single digits keep 1",
+  fmtDur(0.42) === "0.42s" && fmtDur(8.44) === "8.4s", [fmtDur(0.42), fmtDur(8.44)]);
+check("fmtDur: whole seconds under a minute",
+  fmtDur(45.6) === "46s" && fmtDur(59.4) === "59s", [fmtDur(45.6), fmtDur(59.4)]);
+check("fmtDur: rounds BEFORE the 60s boundary (59.6s is 1:00, never '60s')",
+  fmtDur(59.6) === "1:00" && fmtDur(60) === "1:00", [fmtDur(59.6), fmtDur(60)]);
+check("fmtDur: mm:ss past a minute, h:mm:ss past an hour",
+  fmtDur(85.166) === "1:25" && fmtDur(300) === "5:00" && fmtDur(4923) === "1:22:03",
+  [fmtDur(85.166), fmtDur(300), fmtDur(4923)]);
+check("fmtDur: garbage and negatives never print NaN",
+  fmtDur(undefined) === "0s" && fmtDur("x") === "0s" && fmtDur(-90) === "1:30",
+  [fmtDur(undefined), fmtDur("x"), fmtDur(-90)]);
+check("fmtElapsed: wall clock stays in words, drops a bare zero",
+  fmtElapsed(45) === "45s" && fmtElapsed(192) === "3m 12s" && fmtElapsed(300) === "5m" && fmtElapsed(3900) === "1h 05m",
+  [fmtElapsed(45), fmtElapsed(192), fmtElapsed(300), fmtElapsed(3900)]);
 
 console.log(failures === 0 ? "\nAll feature checks passed." : `\n${failures} check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);

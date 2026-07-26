@@ -19,7 +19,7 @@ import { homedir, tmpdir } from "node:os";
 import { liveEnv } from "./config.js";
 import { cloudEnabled, askCloud } from "./cloud.js";
 import { log } from "./log.js";
-import { mmss } from "./tools/util.js";
+import { mmss, fmtElapsed } from "./tools/util.js";
 import { recordUsage } from "./usage.js";
 
 const PROJECT_ROOT = dirname(dirname(fileURLToPath(import.meta.url))); // server/ -> root
@@ -98,6 +98,99 @@ export function friendlyError(message, code) {
   return m || "Claude call failed.";
 }
 
+/* ---------------------------------------------------------------------------
+ * Live model list (self-hosted mode only)
+ *
+ * The panel's Model dropdown used to hardcode names, which go stale the moment
+ * Anthropic ships a model (the tier ALIASES kept working, but the labels lied,
+ * and a genuinely new tier never appeared at all). There is no `claude models`
+ * subcommand, and GET /v1/models needs an API key we deliberately don't have
+ * (subscription auth only). What the CLI DOES expose is the Agent SDK control
+ * protocol: run it with --input-format/--output-format stream-json and the
+ * `initialize` handshake answers with the account's real model list
+ * ({ value, resolvedModel, displayName, description, supportedEffortLevels }),
+ * which is exactly what `/model` shows interactively.
+ *
+ * Cost: one short-lived subprocess, no prompt, no tokens. Still, we only spawn
+ * it when the user actually opens the settings popover in self-hosted mode
+ * (cloud users never pay for a CLI they don't use), and cache the answer.
+ * ------------------------------------------------------------------------- */
+
+/** Shown when the CLI can't be reached (offline, not installed, cloud mode). */
+export const FALLBACK_MODELS = [
+  { value: "opus", displayName: "Opus", description: "Most capable for complex edits" },
+  { value: "sonnet", displayName: "Sonnet", description: "Efficient for routine tasks" },
+  { value: "haiku", displayName: "Haiku", description: "Fastest for quick answers" },
+  { value: "fable", displayName: "Fable", description: "For the hardest, longest-running tasks" },
+];
+
+const MODELS_TTL_MS = 10 * 60 * 1000;
+let modelsCache = null; // { at:number, models:Array }
+
+/**
+ * Ask the local CLI which models this login can actually use.
+ * @param {object} [o]
+ * @param {boolean} [o.refresh]  bypass the cache
+ * @returns {Promise<{models:Array, source:"cli"|"fallback", error?:string}>}
+ */
+export function listClaudeModels({ refresh = false } = {}) {
+  if (!refresh && modelsCache && Date.now() - modelsCache.at < MODELS_TTL_MS) {
+    return Promise.resolve({ models: modelsCache.models, source: "cli" });
+  }
+  return new Promise((resolve) => {
+    const [bin, ...prefixArgs] = resolveClaudeLaunch();
+    const args = [...prefixArgs, "-p", "--strict-mcp-config", "--tools", "",
+      "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"];
+    let child, settled = false;
+    const done = (out) => {
+      if (settled) return;
+      settled = true;
+      if (child && !child.killed) { try { child.kill(); } catch (e) {} }
+      clearTimeout(timer);
+      resolve(out);
+    };
+    const giveUp = (msg) => {
+      if (settled) return; // late exit/error after we already have the list
+
+      log("[ai] model list unavailable:", msg);
+      done({ models: FALLBACK_MODELS, source: "fallback", error: friendlyError(msg) });
+    };
+    try {
+      child = spawn(bin, args, { cwd: tmpdir(), env: claudeSpawnEnv(), stdio: ["pipe", "pipe", "ignore"] });
+    } catch (e) { giveUp(e.message); return; }
+    // The handshake answers in ~1s; never let a wedged CLI hold the popover.
+    const timer = setTimeout(() => giveUp("timed out waiting for the model list"), 30000);
+    child.on("error", (e) => giveUp(e.message));
+    child.on("exit", () => giveUp("the CLI exited before answering"));
+
+    let buf = "";
+    child.stdout.on("data", (d) => {
+      buf += d;
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+        if (!line.trim()) continue;
+        let msg;
+        try { msg = JSON.parse(line); } catch (e) { continue; }
+        // control_response -> { response: { subtype, response: { models, ... } } }
+        const models = msg && msg.type === "control_response" && msg.response
+          && msg.response.response && msg.response.response.models;
+        if (Array.isArray(models) && models.length) {
+          // "default" is the CLI's own default pick — the same "whatever is
+          // configured elsewhere" idea we just removed from the dropdown.
+          const usable = models.filter((m) => m && m.value && m.value !== "default");
+          modelsCache = { at: Date.now(), models: usable };
+          done({ models: usable, source: "cli" });
+          return;
+        }
+      }
+    });
+    try {
+      child.stdin.write(JSON.stringify({ type: "control_request", request_id: "models", request: { subtype: "initialize" } }) + "\n");
+    } catch (e) { giveUp(e.message); }
+  });
+}
+
 /**
  * Run one headless judgment call.
  * @param {object} o
@@ -163,7 +256,7 @@ export function askClaude({ prompt, system, schema, model, effort, token } = {})
       if (token) { if (token.child === child) token.child = null; if (token.children) token.children.delete(child); }
 
       if (token && token.aborted) { reject(new Error("Cancelled")); return; }
-      if (timedOut) { reject(new Error(`Claude didn't answer within ${Math.round(aiTimeoutMs() / 1000)}s. Try a faster model/effort or a shorter selection.`)); return; }
+      if (timedOut) { reject(new Error(`Claude didn't answer within ${fmtElapsed(aiTimeoutMs() / 1000)}. Try a faster model/effort or a shorter selection.`)); return; }
 
       let parsed = null;
       try { parsed = JSON.parse(out); } catch { /* not JSON (likely an error on stderr) */ }

@@ -17,7 +17,7 @@ import {
 import { runChatTurn } from "./chat.js";
 import { renderJob, renderScale } from "./render.js";
 import { reconcile, requireReview } from "../review.js";
-import { callHostHealing, getTimeline, mmss, round3 } from "../tools/util.js";
+import { callHostHealing, getTimeline, mmss, round3, fmtDur } from "../tools/util.js";
 import { recordUsage } from "../usage.js";
 
 function anim(ctx) {
@@ -101,7 +101,7 @@ async function placeRender(ctx, job, renderInfo, onStatus) {
       const expected = job.durationInFrames / job.fps;
       const liveDur = last && last.liveEndSec != null ? last.liveEndSec - first.liveStartSec : null;
       if (liveDur != null && Math.abs(liveDur - expected) > 0.25) {
-        warning = `Heads up: the selected segments now span ${liveDur.toFixed(2)}s on the timeline but the animation is ${expected.toFixed(2)}s (the timeline changed after this animation was created).`;
+        warning = `Heads up: the selected segments now span ${fmtDur(liveDur)} on the timeline but the animation is ${fmtDur(expected)} (the timeline changed after this animation was created).`;
       }
     } else {
       warning = "The first selected segment is no longer on the timeline, so the clip was placed at its original position.";
@@ -220,7 +220,7 @@ async function animCreate(params, helpers, ctx) {
       projectDir: dir,
     }, kitPath);
     a.jobs.set(job.id, job);
-    return { job: jobSummary(job), message: `Animation ${job.id} created (${round3(job.durationInFrames / job.fps)}s). Tell the agent what to build.` };
+    return { job: jobSummary(job), message: `Animation ${job.id} created (${fmtDur(job.durationInFrames / job.fps)}). Tell the agent what to build.` };
   });
 }
 

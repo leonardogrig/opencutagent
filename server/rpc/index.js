@@ -11,8 +11,9 @@ import { buildLevels, levelsForPanel, applySilenceRanges } from "../silences.js"
 import { restoreUndo, hasUndo } from "../undo.js";
 import { liveEnv, setEnvKey } from "../config.js";
 import { readCloudConfig, writeCloudConfig, cloudUrl, cloudLinkStart, cloudLinkPoll, cloudSignOut, cloudMe } from "../cloud.js";
-import { askClaude, THRESHOLD_SCHEMA, thresholdSystem, thresholdPrompt, analyzeRetakes } from "../ai.js";
+import { askClaude, THRESHOLD_SCHEMA, thresholdSystem, thresholdPrompt, analyzeRetakes, listClaudeModels } from "../ai.js";
 import { readUsage, recordUsage } from "../usage.js";
+import { fmtDur } from "../tools/util.js";
 import { animHandlers } from "../animation/index.js";
 
 // Model/effort come from the panel dropdowns; fall back to .env, then sane defaults.
@@ -135,7 +136,7 @@ async function applyDecisions(params, helpers, ctx) {
         res.cutsMarked === 0
           ? "No segments are marked Cut" +
             (trimExcess ? " and no excess non-speech was found to trim." : ". Mark segments (or run Analyze w/ Claude), then Apply All.")
-          : `All ${res.cutsMarked} Cut segment(s) are already removed from the timeline (~${res.alreadyGoneSec}s cut earlier). Nothing new to apply.`;
+          : `All ${res.cutsMarked} Cut segment(s) are already removed from the timeline (~${fmtDur(res.alreadyGoneSec)} cut earlier). Nothing new to apply.`;
       return { applied: 0, ripple, cutsRequested: 0, cutsMarked: res.cutsMarked, alreadyGone: res.alreadyGone, revision: res.revision, message };
     }
     if (res.rebuild) {
@@ -151,7 +152,7 @@ async function applyDecisions(params, helpers, ctx) {
       message:
         (res.aborted
           ? `Stopped after ${res.applied} cut(s).`
-          : `Applied ${res.applied}/${res.requested} cut(s) (~${res.appliedSec}s)${ripple ? " and closed the gaps" : " (gaps left in place)"}.`) +
+          : `Applied ${res.applied}/${res.requested} cut(s) (~${fmtDur(res.appliedSec)})${ripple ? " and closed the gaps" : " (gaps left in place)"}.`) +
         (res.excessSpans ? ` Includes ${res.excessSpans} excess non-speech trim(s) inside keeps.` : "") +
         (res.alreadyGone ? ` ${res.alreadyGone} other cut(s) had already been removed.` : "") +
         (res.errors && res.errors.length ? ` ${res.errors.length} error(s). First: ${res.errors[0].error}` : "") +
@@ -458,6 +459,17 @@ async function clearCache(_params, helpers, ctx) {
   };
 }
 
+/**
+ * Models the panel's dropdown should offer, read from the local CLI so it
+ * never goes stale (see ai.js listClaudeModels). Cloud mode answers instantly
+ * with nothing: the model select is hidden there, and spawning a `claude` the
+ * user may not even have installed would be pure waste.
+ */
+async function aiModels(params) {
+  if (readCloudConfig().mode !== "self") return { models: [], source: "cloud" };
+  return listClaudeModels({ refresh: !!(params && params.refresh) });
+}
+
 // ---- ElevenLabs API key (panel modal for non-developers; no .env editing) ----
 const ELEVENLABS_KEY = "ELEVENLABS_API_KEY";
 
@@ -646,7 +658,7 @@ async function cloudAccount() {
   return cloudMe();
 }
 
-const HANDLERS = { ping, cancel, loadSegments, autoLoadSegments, applyDecisions, softApply, clearMarkers, exportTranscript, timelineMap, reinsertSegment, analyzeLevels, applySilences, aiThreshold, aiRetakes, undoLastApply, undoStatus, cacheInfo, clearCache, usageLog, keyStatus, setApiKey, envList, setEnv, cloudStatus, cloudLink, cloudPoll, cloudSignOut: cloudSignOutRpc, cloudSetMode, cloudAccount, ...animHandlers };
+const HANDLERS = { ping, cancel, loadSegments, autoLoadSegments, applyDecisions, softApply, clearMarkers, exportTranscript, timelineMap, reinsertSegment, analyzeLevels, applySilences, aiThreshold, aiRetakes, undoLastApply, undoStatus, cacheInfo, clearCache, usageLog, aiModels, keyStatus, setApiKey, envList, setEnv, cloudStatus, cloudLink, cloudPoll, cloudSignOut: cloudSignOutRpc, cloudSetMode, cloudAccount, ...animHandlers };
 
 export function createRpcDispatcher(ctx) {
   return async (method, params, helpers) => {

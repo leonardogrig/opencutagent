@@ -149,6 +149,37 @@ export function mmss(sec) {
   return `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
 }
 
+/**
+ * A LENGTH of footage, for humans: "0.42s" / "8.4s" / "45s" / "1:25" / "1:02:03".
+ * Raw seconds stop being readable somewhere around a minute ("85.166s" or
+ * "300s" makes the reader do arithmetic), so anything past 59s switches to
+ * mm:ss. Precision shrinks as the number grows: sub-second values keep two
+ * decimals (a 0.42s fragment), single digits keep one.
+ *
+ * Use this for footage/timeline durations. For wall-clock time (how long an
+ * operation took, a timeout) use fmtElapsed: "1:25" reads like a position on
+ * the timeline, which is wrong for "answered within 10 minutes".
+ */
+export function fmtDur(sec) {
+  const s = Math.abs(Number(sec) || 0);
+  if (s < 1) return `${Math.round(s * 100) / 100}s`;
+  if (s < 10) return `${Math.round(s * 10) / 10}s`;
+  const t = Math.round(s);
+  if (t < 60) return `${t}s`; // round FIRST: 59.6s is "1:00", not "60s"
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), ss = t % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return h ? `${h}:${pad(m)}:${pad(ss)}` : `${m}:${pad(ss)}`;
+}
+
+/** Wall-clock time: "45s" / "5m 24s" / "1h 05m". */
+export function fmtElapsed(sec) {
+  const t = Math.round(Math.abs(Number(sec) || 0));
+  if (t < 60) return `${t}s`;
+  const m = Math.floor(t / 60);
+  if (m < 60) return t % 60 ? `${m}m ${t % 60}s` : `${m}m`;
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
+}
+
 // Resolve a "timecode | seconds | frame" user value to timeline seconds for
 // the host. Accepts numbers (seconds), "HH:MM:SS:FF"/"HH:MM:SS;FF", or "123f"
 // (frames). Timecodes are read as RULER timecodes, matching what the tools

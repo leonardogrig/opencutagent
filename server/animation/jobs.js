@@ -10,7 +10,7 @@ import {
 import { join, basename } from "node:path";
 import { reconcile, requireReview } from "../review.js";
 import { readCachedWords } from "../transcription/transcribe.js";
-import { round3, mmss } from "../tools/util.js";
+import { round3, mmss, fmtDur, fmtElapsed as fmtElapsedSec } from "../tools/util.js";
 import { kitDir } from "./kit.js";
 import { liveEnv } from "../config.js";
 import { log } from "../log.js";
@@ -55,13 +55,16 @@ export function fmtTokens(n) {
   return (k >= 100 ? String(Math.round(k)) : k.toFixed(1).replace(/\.0$/, "")) + "k";
 }
 
-/** Milliseconds -> "45s" / "3m 12s" for the placed notice. Pure (unit-tested). */
+/**
+ * Milliseconds -> "45s" / "3m 12s" for the placed notice. Pure (unit-tested).
+ * Delegates the wording to the shared wall-clock formatter so the panel and the
+ * server never drift; the ms input and the null-on-garbage contract are this
+ * one's own (the notice drops the bit entirely when the timing is unknown).
+ */
 export function fmtElapsed(ms) {
   const raw = Number(ms);
   if (!Number.isFinite(raw) || raw < 0) return null;
-  const s = Math.round(raw / 1000);
-  if (s < 60) return s + "s";
-  return Math.floor(s / 60) + "m " + (s % 60) + "s";
+  return fmtElapsedSec(raw / 1000);
 }
 
 /**
@@ -396,7 +399,7 @@ export async function createJob(ctx, { indexes, style, background, trackIndex, p
 
   regenerateManifest(kitDirPath);
   saveJob(job);
-  appendChat(job, { role: "system", kind: "created", text: `Animation created for ${selected.length} segment(s), ${round3(durationSec)}s.` });
+  appendChat(job, { role: "system", kind: "created", text: `Animation created for ${selected.length} segment(s), ${fmtDur(durationSec)}.` });
   return job;
 }
 

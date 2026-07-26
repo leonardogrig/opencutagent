@@ -9,7 +9,7 @@
 // and applies them via the fast-apply ladder in applyRangesBatched (XML
 // round-trip / generated rebuild for big ripple applies, else the batched
 // razor-lift-close host ops).
-import { getTimeline, round3, ToolError, isAborted, callHostHealing } from "./tools/util.js";
+import { getTimeline, round3, ToolError, isAborted, callHostHealing, fmtDur } from "./tools/util.js";
 import { hasAudioStream } from "./audio/probe.js";
 import { rebuildViaXml } from "./rebuild.js";
 import { roundtripViaXml } from "./roundtrip.js";
@@ -353,7 +353,7 @@ export async function applySilenceRanges(ctx, { ranges = [], mode = "remove", tr
         undoable: false,
         revision: ctx.state.revision,
         message:
-          `Created tightened sequence "${res.sequenceName}"${res.opened ? " (now open)" : ""}. Removed ${applied} silence range(s), ~${round3(appliedSec)}s. ` +
+          `Created tightened sequence "${res.sequenceName}"${res.opened ? " (now open)" : ""}. Removed ${applied} silence range(s), ~${fmtDur(appliedSec)}. ` +
           `The original sequence is untouched; delete the new one to discard.`,
       };
     }
@@ -387,7 +387,7 @@ export async function applySilenceRanges(ctx, { ranges = [], mode = "remove", tr
       (aborted ? "Stopped after " : `${mode === "mute" ? "Muted" : "Removed"} `) +
       `${applied}${aborted ? "" : "/" + requested} silence range(s)` +
       (mode === "remove" ? (aborted ? "" : " and closed the gaps") : mode === "keepSpaces" ? " (gaps left in place)" : "") +
-      `. ~${removedSeconds}s.` +
+      `. ~${fmtDur(removedSeconds)}.` +
       (errors.length ? ` ${errors.length} error(s). First: ${errors[0].error}` : "") +
       transitionNote +
       (applied > 0 ? " Use Undo to revert." : ""),

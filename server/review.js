@@ -1,7 +1,7 @@
 // Shared "retake review" state + operations, used by BOTH the panel RPC and the
 // MCP tools so they operate on the same segment list. The AI analysis itself is
 // done by Claude (in the conversation, via MCP tools) — no external LLM.
-import { getTimeline, round3, isAborted } from "./tools/util.js";
+import { getTimeline, round3, isAborted, fmtDur } from "./tools/util.js";
 import { hasAudioStream } from "./audio/probe.js";
 import { liveEnv } from "./config.js";
 import { transcribeSourceRanges } from "./transcription/transcribe.js";
@@ -73,7 +73,7 @@ export function classifyFragments(segments, opts = {}) {
       }
     } else if (flagShort && s.durationSec < minFragSec) {
       s.fragment = "short";
-      s.reason = s.reason || `very short (${s.durationSec.toFixed(2)}s), possible false start`;
+      s.reason = s.reason || `very short (${fmtDur(s.durationSec)}), possible false start`;
       flagged += 1;
     }
   }

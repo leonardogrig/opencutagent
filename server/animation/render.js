@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { liveEnv } from "../config.js";
 import { remotionCliEntry } from "./kit.js";
 import { log } from "../log.js";
+import { fmtDur } from "../tools/util.js";
 
 const ffmpegBin = () => liveEnv("FFMPEG_BIN") || "ffmpeg";
 
@@ -161,7 +162,7 @@ export async function renderJob({ kitDirPath, job, version, scale = 1, onProgres
   const durationSec = await probeDurationSec(outPath, token);
   if (durationSec != null && Math.abs(durationSec - expected) > Math.max(0.25, 2 / job.fps)) {
     log(`animation render duration mismatch: got ${durationSec}s, expected ${expected}s`);
-    throw new Error(`The render came out ${durationSec.toFixed(2)}s but the selection is ${expected.toFixed(2)}s. The composition duration is fixed by the server — reload and try again.`);
+    throw new Error(`The render came out ${fmtDur(durationSec)} but the selection is ${fmtDur(expected)}. The composition duration is fixed by the server — reload and try again.`);
   }
   return { path: outPath, file, durationSec };
 }

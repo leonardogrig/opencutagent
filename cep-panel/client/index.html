@@ -45,15 +45,17 @@
         <div class="pop-sec" id="configSec">
           <div class="pop-title">Config</div>
           <div id="aiCtls" class="pop-group">
-            <!-- value = tier alias (always valid, auto-resolves to the newest of that tier);
-                 label shows the current version for clarity (bump when a newer model ships). -->
+            <!-- These options are only the OFFLINE FALLBACK. In self-hosted mode
+                 the panel replaces them with the real list from the local Claude
+                 CLI (RPC "aiModels"), so new models appear on their own — do not
+                 hand-maintain versions here. Values are tier aliases, which stay
+                 valid regardless. -->
             <label class="pop-row"><span>Model</span>
-              <select id="aiModel" title="Model for “Suggest threshold” and “Analyze w/ Claude” (Latest = your Claude Code default).">
-                <option value="latest">Latest</option>
-                <option value="opus">Opus 4.8</option>
-                <option value="sonnet">Sonnet 4.6</option>
-                <option value="haiku">Haiku 4.5</option>
-                <option value="fable">Fable 5</option>
+              <select id="aiModel" title="Model for “Suggest threshold” and “Analyze w/ Claude”.">
+                <option value="opus">Opus</option>
+                <option value="sonnet">Sonnet</option>
+                <option value="haiku">Haiku</option>
+                <option value="fable">Fable</option>
               </select>
             </label>
             <label class="pop-row"><span>Effort</span>

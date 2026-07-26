@@ -43,6 +43,26 @@
   /* ---------- small helpers ---------- */
   function pad2(n) { return (n < 10 ? "0" : "") + Math.floor(n); }
   function mmss(sec) { return Math.floor(sec / 60) + ":" + pad2(sec % 60); }
+  /* A LENGTH of footage, for humans: "0.42s" / "8.4s" / "45s" / "1:25" / "1:02:03".
+     Raw seconds stop being readable around a minute ("85.166s", "300s"), so
+     anything past 59s becomes mm:ss; precision shrinks as the number grows.
+     Mirrors server/tools/util.js fmtDur — keep the two in sync. */
+  function fmtDur(sec) {
+    var s = Math.abs(Number(sec) || 0);
+    if (s < 1) return (Math.round(s * 100) / 100) + "s";
+    if (s < 10) return (Math.round(s * 10) / 10) + "s";
+    var t = Math.round(s), h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), ss = t % 60;
+    if (t < 60) return t + "s"; // round FIRST: 59.6s is "1:00", not "60s"
+    return h ? h + ":" + pad2(m) + ":" + pad2(ss) : m + ":" + pad2(ss);
+  }
+  /* Wall-clock time, where "1:25" would read like a timeline position. */
+  function fmtElapsed(sec) {
+    var t = Math.round(Math.abs(Number(sec) || 0));
+    if (t < 60) return t + "s";
+    var m = Math.floor(t / 60);
+    if (m < 60) return (t % 60) ? m + "m " + (t % 60) + "s" : m + "m";
+    return Math.floor(m / 60) + "h " + pad2(m % 60) + "m";
+  }
   function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
   function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
   function $(id) { return document.getElementById(id); }
@@ -402,13 +422,13 @@
    *  to the Claude Code chat (MCP). Choices persist in localStorage.
    * ================================================================ */
   var AI = (function () {
-    var st = { sync: false, model: "latest", effort: "high", cloud: { mode: "cloud", signedIn: false, email: null, plan: null, usageText: "" } };
+    var st = { sync: false, model: "opus", effort: "high", modelsAsked: false, cloud: { mode: "cloud", signedIn: false, email: null, plan: null, usageText: "" } };
     var el = {};
     var confirmingClear = false;
     function load() {
       try {
         st.sync = window.localStorage.getItem("editagent.ai.sync") === "1";
-        st.model = window.localStorage.getItem("editagent.ai.model") || "latest";
+        st.model = window.localStorage.getItem("editagent.ai.model") || "opus";
         st.effort = window.localStorage.getItem("editagent.ai.effort") || "high";
         st.sttModel = window.localStorage.getItem("editagent.sttModel") || "scribe_v2";
       } catch (e) {}
@@ -428,9 +448,20 @@
       // assignment: the select would SHOW one model while params() sends the
       // stale string. Re-sync state to what the select actually displays.
       el.aiModel.value = st.model;
-      if (el.aiModel.value !== st.model) { st.model = el.aiModel.value || "latest"; persist(); el.aiModel.value = st.model; }
+      // Fall back to the first option that actually exists, NOT a hardcoded
+      // name: the live list renames aliases ("opus" -> "opus[1m]"), and a
+      // fallback string missing from the list leaves the select blank while
+      // params() keeps sending the dead value.
+      if (el.aiModel.value !== st.model) {
+        st.model = el.aiModel.value || (el.aiModel.options[0] && el.aiModel.options[0].value) || "opus";
+        persist();
+        el.aiModel.value = st.model;
+      }
       el.aiEffort.value = st.effort;
       if (el.aiEffort.value !== st.effort) { st.effort = el.aiEffort.value || "high"; persist(); el.aiEffort.value = st.effort; }
+      // Haiku takes no effort level (the CLI ignores the flag) — grey the row
+      // out so the control never looks like it is doing something it isn't.
+      el.aiEffort.disabled = !modelTakesEffort();
       el.sttModel.value = st.sttModel;
       if (el.sttModel.value !== st.sttModel) { st.sttModel = el.sttModel.value || "scribe_v2"; persist(); el.sttModel.value = st.sttModel; }
       var cloudActive = st.cloud.mode !== "self";
@@ -490,7 +521,10 @@
       if (!n) return "$0.00";
       return n < 0.01 ? "<$0.01" : "$" + n.toFixed(2);
     }
-    function fmtDur(sec) {
+    // Billed audio is a QUANTITY, not a length to scrub to, so it stays coarse
+    // ("1.4 h of audio" beats "1:24:36 of audio"). Named apart from the global
+    // fmtDur so neither shadows the other.
+    function fmtAudioLen(sec) {
       if (sec >= 3600) return (sec / 3600).toFixed(1) + " h";
       if (sec >= 60) return Math.round(sec / 60) + " min";
       return Math.round(sec) + " s";
@@ -500,12 +534,12 @@
       return (d.getMonth() + 1) + "/" + d.getDate() + " " + pad2(d.getHours()) + ":" + pad2(d.getMinutes());
     }
     function usageDetails(e) {
-      if (e.type === "transcription") return fmtDur(e.seconds || 0) + " of " + (e.media || "audio");
+      if (e.type === "transcription") return fmtAudioLen(e.seconds || 0) + " of " + (e.media || "audio");
       var bits = [];
       if (e.segments) bits.push(e.segments + " segments");
       if (e.calls > 1) bits.push(e.calls + " calls");
       if (e.inputTokens || e.outputTokens) bits.push(Math.round(((e.inputTokens || 0) + (e.outputTokens || 0)) / 1000) + "k tokens");
-      if (e.durationMs) bits.push(Math.round(e.durationMs / 1000) + "s");
+      if (e.durationMs) bits.push(fmtElapsed(e.durationMs / 1000));
       return bits.join(", ") || "1 call";
     }
     function renderUsage(r) {
@@ -526,7 +560,7 @@
       el.usageEmpty.hidden = !!entries.length;
       var t = (r && r.totals) || {};
       el.usageTotals.textContent = entries.length
-        ? "Total: " + fmtUsd(t.costUsd || 0) + " transcription (" + fmtDur(t.transcribedSec || 0) + " of audio), " + (t.claudeCalls || 0) + " Claude call(s)"
+        ? "Total: " + fmtUsd(t.costUsd || 0) + " transcription (" + fmtAudioLen(t.transcribedSec || 0) + " of audio), " + (t.claudeCalls || 0) + " Claude call(s)"
         : "";
     }
     function openUsage() {
@@ -553,6 +587,49 @@
       if (st.keySet === true) { el.keyState.textContent = "•••• " + (st.keyLast4 || ""); setLabel(el.keyBtn, "Change key"); }
       else if (st.keySet === false) { el.keyState.textContent = "Not set"; setLabel(el.keyBtn, "Add API key"); }
       else { el.keyState.textContent = "…"; }
+    }
+    /* ---- Model list (self-hosted only, lazy) ----
+     * The <option>s in index.html are just an offline fallback; the real list
+     * comes from the local CLI (server RPC "aiModels"), so a model that ships
+     * tomorrow shows up without touching this code. Fetched the first time the
+     * user opens this popover, and only in self-hosted mode: a cloud user has
+     * no model select and may not have the CLI installed at all. */
+    // Effort support per model value, from the CLI. Empty map = unknown
+    // (offline fallback), and unknown means "send effort", the old behaviour.
+    var effortByModel = {};
+    function modelTakesEffort() {
+      var known = effortByModel[st.model];
+      return known === undefined ? true : known;
+    }
+    function renderModels(models) {
+      if (!el.aiModel || !models || !models.length) return;
+      effortByModel = {};
+      for (var k = 0; k < models.length; k++) {
+        var mm = models[k];
+        effortByModel[mm.value] = mm.supportsEffort !== undefined
+          ? !!mm.supportsEffort
+          : !!(mm.supportedEffortLevels && mm.supportedEffortLevels.length);
+      }
+      var html = "";
+      for (var i = 0; i < models.length; i++) {
+        var m = models[i];
+        html += '<option value="' + esc(m.value) + '"'
+          + (m.description ? ' title="' + esc(m.description) + '"' : "")
+          + ">" + esc(m.displayName || m.value) + "</option>";
+      }
+      el.aiModel.innerHTML = html;
+      // A persisted pick the new list no longer carries (renamed alias, another
+      // machine) would leave the select blank while params() sent the dead
+      // string — reflect() re-syncs state to what is actually displayed.
+      reflect();
+    }
+    function refreshModels() {
+      if (st.modelsAsked || !connected() || st.cloud.mode !== "self") return;
+      st.modelsAsked = true;
+      callServer("aiModels", {}).then(
+        function (r) { if (r && r.models && r.models.length) renderModels(r.models); },
+        function () { st.modelsAsked = false; } // let the next open retry
+      );
     }
     function refreshKey() {
       if (!el.keyState) return;
@@ -689,6 +766,9 @@
           st.cloud.plan = r && r.plan;
           reflectCloud();
           updateAllButtons(); // sync-mode button labels depend on the mode
+          // Mode is only known now: if the popover opened first (or the user
+          // just flipped Self-hosted on), fill the model list.
+          if (st.cloud.mode === "self" && el.aiPop && !el.aiPop.hidden) refreshModels();
           if (st.cloud.signedIn && st.cloud.mode === "cloud") {
             callServer("cloudAccount", {}).then(
               function (a) {
@@ -818,7 +898,7 @@
       el.aiPop.hidden = false;
       el.aiConfigBtn.classList.add("active");
       el.aiConfigBtn.setAttribute("aria-expanded", "true");
-      resetClearBtn(); refreshCache(); refreshKey(); refreshCloud();
+      resetClearBtn(); refreshCache(); refreshKey(); refreshCloud(); refreshModels();
       if (!el.advBody.hidden) refreshAdv();
     }
     function close() {
@@ -839,7 +919,7 @@
       load(); reflect();
       reflectCloud(); // hide the self-hosted-only rows immediately (default mode is cloud)
       el.syncToggle.addEventListener("change", function () { st.sync = el.syncToggle.checked; persist(); reflect(); updateAllButtons(); });
-      el.aiModel.addEventListener("change", function () { st.model = el.aiModel.value; persist(); });
+      el.aiModel.addEventListener("change", function () { st.model = el.aiModel.value; persist(); reflect(); });
       el.aiEffort.addEventListener("change", function () { st.effort = el.aiEffort.value; persist(); });
       el.sttModel.addEventListener("change", function () { st.sttModel = el.sttModel.value; persist(); });
       el.aiConfigBtn.addEventListener("click", function (e) { e.stopPropagation(); if (el.aiPop.hidden) open(); else close(); });
@@ -886,9 +966,11 @@
       setCloud: function (patch) { for (var k in patch) if (patch.hasOwnProperty(k)) st.cloud[k] = patch[k]; reflectCloud(); },
       // QA-in-a-browser hooks: __editagent.AI.openUsage(); __editagent.AI.renderUsage({entries:[...],totals:{...}});
       // __editagent.AI.renderAdv([{key,value,def,desc,restart}]) after clicking Advanced.
+      // __editagent.AI.renderModels([{value,displayName,description,supportedEffortLevels}])
       openUsage: openUsage,
       renderUsage: renderUsage,
       renderAdv: renderAdv,
+      renderModels: renderModels,
     };
   })();
 
@@ -1260,7 +1342,7 @@
       if (!s.loaded) { el.silSummary.textContent = ""; return; }
       var n = s.ranges.length, secs = s.totalSec;
       var verb = s.mode === "mute" ? "to mute" : "to remove";
-      el.silSummary.textContent = n + " silence" + (n === 1 ? "" : "s") + " · ~" + secs.toFixed(1) + "s " + verb +
+      el.silSummary.textContent = n + " silence" + (n === 1 ? "" : "s") + " · ~" + fmtDur(secs) + " " + verb +
         " · threshold " + s.settings.thresholdDb + " dB";
     }
     function cutLabel() {
@@ -2159,8 +2241,8 @@
       var flagged = state.segments.filter(function (s) { return s.fragment === "short"; }).length;
       var excess = (el.trimExcess && el.trimExcess.checked) ? excessEstimateSec() : 0;
       el.summary.textContent =
-        state.segments.length + " segments · " + pending.length + " to cut · ~" + secs.toFixed(1) + "s to remove" +
-        (excess >= 0.2 ? " · ~" + excess.toFixed(1) + "s excess" : "") +
+        state.segments.length + " segments · " + pending.length + " to cut · ~" + fmtDur(secs) + " to remove" +
+        (excess >= 0.2 ? " · ~" + fmtDur(excess) + " excess" : "") +
         (removed ? " · " + removed + " removed" : "") +
         (flagged ? " · " + flagged + " flagged" : "");
     }
@@ -2510,7 +2592,7 @@
         var confirming = state.confirmDel === j.id;
         html += '<div class="anim-job" data-job="' + esc(j.id) + '">' +
           '<span class="anim-job-name">' + esc(j.title || j.id) + "</span>" +
-          '<span class="anim-job-meta">' + (j.durationSec != null ? j.durationSec.toFixed(1) + "s" : "") +
+          '<span class="anim-job-meta">' + (j.durationSec != null ? fmtDur(j.durationSec) : "") +
           " · " + esc(j.background === "transparent" ? "no bg" : "solid") +
           (j.sizeSource === "custom" ? " · " + j.width + "x" + j.height : "") +
           (j.createdAt ? " · " + fmtAgo(j.createdAt) : "") + "</span>" +
@@ -2568,7 +2650,7 @@
       if (!state.selection.length) { el.animSelSummary.textContent = Retake.isLoaded() ? "Nothing selected" : ""; return; }
       var span = selectionSpan();
       var dur = span ? span.end - span.start : 0;
-      el.animSelSummary.textContent = state.selection.length + " segment(s) · " + dur.toFixed(1) + "s · " + (span ? mmss(span.start) + "–" + mmss(span.end) : "");
+      el.animSelSummary.textContent = state.selection.length + " segment(s) · " + fmtDur(dur) + " · " + (span ? mmss(span.start) + "–" + mmss(span.end) : "");
     }
 
     function fmtStyleOption(s) { return '<option value="' + esc(s.id) + '">' + esc(s.name) + "</option>"; }
@@ -2661,7 +2743,7 @@
       if (!job) return;
       el.animJobInfo.innerHTML =
         '<span class="anim-job-name">' + esc(job.title || job.id) + "</span>" +
-        '<span class="anim-job-meta">' + job.durationSec.toFixed(1) + "s · " +
+        '<span class="anim-job-meta">' + fmtDur(job.durationSec) + " · " +
         esc(job.background === "transparent" ? "no bg" : "solid bg") + " · " + esc(job.style) +
         (job.sizeSource === "custom" ? " · " + job.width + "x" + job.height : "") + "</span>" +
         '<span class="seg-badges">' + jobBadge(job, true) + "</span>" +
