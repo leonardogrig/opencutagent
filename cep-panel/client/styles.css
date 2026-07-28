@@ -734,7 +734,25 @@ button.reinsert:hover:not(:disabled) { background: var(--accent-hover); border-c
 }
 .anim-segrow.sel .anim-check { background: var(--accent); border-color: var(--accent); }
 .anim-check .ic { width: 11px; height: 11px; }
-.anim-foot .apply-row { display: flex; }
+.anim-foot .apply-row { display: flex; align-items: stretch; }
+/* The raw button takes only what it needs so the primary keeps its label on one
+   line in a narrow panel. */
+.anim-foot .apply-row #animRawBtn { flex: none; }
+/* A raw animation's length: an editable field in the chat header (nothing on the
+   timeline dictates it, so it is the job's own control, changeable between turns). */
+.anim-rawlen {
+  flex: none; display: flex; align-items: center; gap: var(--sp-1);
+  padding: 2px var(--sp-2);
+  background: var(--surface-0); border: 1px solid var(--border-default); border-radius: var(--r-md);
+  color: var(--text-tertiary); font-size: var(--fs-sm);
+}
+.anim-rawlen:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
+.anim-rawlen input {
+  width: 40px; min-width: 0; background: transparent; border: none; outline: none;
+  color: var(--text-primary); font: inherit; font-size: var(--fs-md);
+  font-variant-numeric: tabular-nums; text-align: right; -moz-appearance: textfield;
+}
+.anim-rawlen input::-webkit-outer-spin-button, .anim-rawlen input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 
 /* Chat mode */
 .anim-chatwrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }

@@ -13,9 +13,8 @@ import { join } from "node:path";
 import { liveEnv } from "../config.js";
 import { remotionCliEntry } from "./kit.js";
 import { log } from "../log.js";
+import { ffmpegBin } from "../paths.js";
 import { fmtDur } from "../tools/util.js";
-
-const ffmpegBin = () => liveEnv("FFMPEG_BIN") || "ffmpeg";
 
 function runProcess(bin, args, { cwd, token, onStdout, onStderr, timeoutMs = 900000, label = bin } = {}) {
   return new Promise((resolve, reject) => {

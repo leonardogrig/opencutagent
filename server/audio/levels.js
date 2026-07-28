@@ -25,9 +25,9 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import { log } from "../log.js";
+import { ffmpegBin, ffmpegMissingMessage } from "../paths.js";
 import { ENVELOPE_FLOOR_DB } from "./silence.js";
 
-const FFMPEG_BIN = process.env.FFMPEG_BIN || "ffmpeg";
 
 // 8 kHz mono is ample for a silence envelope (160 samples per 20 ms window) and
 // halves the bytes streamed vs 16 kHz. 20 ms windows → 50 Hz envelope.
@@ -65,7 +65,8 @@ function extractEnvelope(mediaPath) {
       "-vn", "-ac", "1", "-ar", String(SAMPLE_RATE),
       "-f", "s16le", "-",
     ];
-    const p = spawn(FFMPEG_BIN, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const bin = ffmpegBin();
+    const p = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
 
     const windowSamples = Math.round(SAMPLE_RATE * WINDOW_SEC);
     const peaks = []; // linear per-window peaks; converted to normalized dB at close
@@ -107,9 +108,7 @@ function extractEnvelope(mediaPath) {
     });
 
     p.stderr.on("data", (d) => (stderr += d.toString()));
-    p.on("error", (e) =>
-      reject(new LevelsError(`Could not run "${FFMPEG_BIN}": ${e.message}. Is ffmpeg installed and on PATH?`))
-    );
+    p.on("error", (e) => reject(new LevelsError(ffmpegMissingMessage(bin, e.message))));
     p.on("close", (code) => {
       if (code !== 0) {
         reject(new LevelsError(`ffmpeg exited ${code} for ${basename(mediaPath)}: ${stderr.slice(-400)}`));

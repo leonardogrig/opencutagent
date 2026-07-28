@@ -558,7 +558,7 @@ const ENV_SPECS = [
   { key: "EDITAGENT_ANIM_HOME", def: "", desc: "Where the animation workspace lives. Empty = ~/.opencutagent/animation-kit.", live: false },
   { key: "EDITAGENT_CLOUD_URL", def: "https://cloud.opencutagent.com", desc: "The OpenCutAgent cloud service used in cloud mode. Point it at http://localhost:3000 when developing the backend." },
   { key: "PREMIERE_BRIDGE_PORT", def: "3001", desc: "Port the panel and server talk over.", live: false },
-  { key: "FFMPEG_BIN", def: "ffmpeg", desc: "Path to ffmpeg if it isn't on PATH.", live: false },
+  { key: "FFMPEG_BIN", def: "ffmpeg", desc: "Full path to ffmpeg. Only needed if it isn't found automatically (macOS: /opt/homebrew/bin/ffmpeg)." },
   { key: "EDITAGENT_CACHE_DIR", def: "", desc: "Where transcripts and audio scans are cached. Empty = the project's .cache folder.", live: false },
 ];
 

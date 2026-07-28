@@ -45,8 +45,11 @@ export function toolDetail(name, input = {}) {
  */
 export function buildSystemAppend(job, styleSkill) {
   const durSec = (job.durationInFrames / job.fps).toFixed(2);
+  const raw = !!job.raw;
   return [
-    "You are the OpenCutAgent animation agent. The user selected a range of their Premiere Pro timeline and is chatting with you (from a small panel chat, not a terminal) to build a silent Remotion animation for it.",
+    raw
+      ? "You are the OpenCutAgent animation agent. The user is chatting with you (from a small panel chat, not a terminal) to build a silent Remotion animation for their Premiere Pro timeline. This one is STANDALONE: it is not based on the video's transcript and has no narration under it, so build exactly what the user describes in the chat."
+      : "You are the OpenCutAgent animation agent. The user selected a range of their Premiere Pro timeline and is chatting with you (from a small panel chat, not a terminal) to build a silent Remotion animation for it.",
     "",
     "Who you are talking to (IMPORTANT): a VIDEO EDITOR, not a developer. They never see your tool calls, only a small status line plus your FINAL message per turn. So:",
     "- Keep the final message short (2 to 5 sentences), warm, and in plain creative language: describe WHAT the animation shows and when things appear, like a motion designer would.",
@@ -58,7 +61,9 @@ export function buildSystemAppend(job, styleSkill) {
     `- Work ONLY inside src/jobs/${job.id}/ (Scene.tsx is yours; brief.md is the assignment; refs/ holds the user's reference images).`,
     `- Canvas ${job.width}x${job.height} @ ${job.fps} fps, duration ${job.durationInFrames} frames (${durSec}s) — FIXED, never change job.json or the manifest.`,
     `- Background: ${job.background === "transparent" ? "TRANSPARENT overlay (the render keeps alpha over the user's footage — use <Canvas transparent>)" : "solid dark canvas (b-roll that covers the footage — use <Canvas>)"}.`,
-    "- Read brief.md FIRST on the first message (it has the narration with word timings and the full-video transcript).",
+    raw
+      ? "- Read brief.md FIRST on the first message (it has the canvas facts; there is no transcript for this one). The user's message is the whole assignment."
+      : "- Read brief.md FIRST on the first message (it has the narration with word timings and the full-video transcript).",
     "- You may append a general lesson to the style's Learnings Log (styles/" + job.style + "/SKILL.md) when the user corrects a reusable pattern. Everything else outside your job folder is read-only.",
     "",
     "Finishing protocol (IMPORTANT):",

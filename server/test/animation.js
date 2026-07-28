@@ -9,7 +9,8 @@ import {
   validateSelection, manifestSource, sceneScaffold, buildBrief, renderFps, newJobId,
   regenerateManifest, readRenderSignal, saveRefImage, saveJob, loadJobsFrom, readChat, appendChat,
   jobsRootFor, animTrackIndex, discardJob, jobTitle, clampTrackIndex,
-  normalizeSizeOverride, fmtTokens, fmtElapsed,
+  normalizeSizeOverride, fmtTokens, fmtElapsed, normalizeRawDuration, buildRawBrief, createRawJob,
+  sequenceFrameSize, setRawLength,
 } from "../animation/jobs.js";
 import { listStyles, readStyleSkill, kitDir as animWorkspaceDir } from "../animation/kit.js";
 import { toolDetail, buildSystemAppend } from "../animation/chat.js";
@@ -90,6 +91,26 @@ check("brief lists the selected narration with relative times", brief.includes("
 check("brief carries word timing when cached", brief.includes("hello@0.10 there@0.60"), brief);
 check("brief includes the full transcript context", brief.includes(">>> [0:10] hello there"), brief);
 check("brief explains transparent mode", /transparent \(overlay/.test(brief), brief);
+
+/* ---------- raw animations (no transcript, user-chosen length) ---------- */
+check("normalizeRawDuration: a plain length passes", normalizeRawDuration(5) === 5 && normalizeRawDuration("7.5") === 7.5, [normalizeRawDuration(5), normalizeRawDuration("7.5")]);
+check("normalizeRawDuration: out-of-range/garbage is refused (never a silent default)",
+  normalizeRawDuration(0.2) === null && normalizeRawDuration(601) === null &&
+  normalizeRawDuration("x") === null && normalizeRawDuration(null) === null, null);
+const rawBrief = buildRawBrief({
+  id: "anim-raw1", style: "excalidraw", background: "solid",
+  fps: 30, width: 3840, height: 2160, durationInFrames: 150,
+  range: { startSec: 650.5, endSec: 655.5 },
+});
+check("raw brief pins the duration in frames", rawBrief.includes("150 frames (5s). FIXED"), rawBrief);
+check("raw brief says there is no narration to follow", /NOT tied to the video's transcript/.test(rawBrief) && /no narration/.test(rawBrief), rawBrief);
+check("raw brief names where the clip lands", rawBrief.includes("10:50"), rawBrief);
+check("raw brief carries no transcript section", !rawBrief.includes("Full video transcript"), rawBrief);
+// getTimeline() normalizes the host's frameSizeHorizontal/Vertical into
+// frameSize{}; reading only one shape composed everything at 1920x1080.
+check("sequenceFrameSize reads the normalized shape", JSON.stringify(sequenceFrameSize({ frameSize: { width: 3840, height: 2160 } })) === '{"width":3840,"height":2160}', sequenceFrameSize({ frameSize: { width: 3840, height: 2160 } }));
+check("sequenceFrameSize reads the raw host shape", JSON.stringify(sequenceFrameSize({ frameSizeHorizontal: 1920, frameSizeVertical: 1080 })) === '{"width":1920,"height":1080}', null);
+check("sequenceFrameSize is null when the host can't report it", sequenceFrameSize({}) === null && sequenceFrameSize(null) === null, null);
 
 /* ---------- renderFps ---------- */
 check("30.00003 rounds to 30", renderFps(30.00003) === 30, renderFps(30.00003));
@@ -198,6 +219,69 @@ try {
   if (prevHome === undefined) delete process.env.EDITAGENT_ANIM_HOME;
   else process.env.EDITAGENT_ANIM_HOME = prevHome;
 
+  // createRawJob end to end against a fake host: no review is loaded at all
+  // (a raw animation must work before anything is transcribed).
+  {
+    const rawProject = join(tmp, "rawproj");
+    const rawKit = join(tmp, "rawkit");
+    mkdirSync(join(rawKit, "src", "jobs"), { recursive: true });
+    const ctx = {
+      bridge: {
+        callHost: async (action) => {
+          if (action === "getTimelineState") {
+            return {
+              sequence: {
+                name: "Seq 01", frameRate: 30.00003, timebase: 8475667, dropFrame: false,
+                frameSizeHorizontal: 3840, frameSizeVertical: 2160,
+                videoTrackCount: 4, audioTrackCount: 4,
+              },
+              clips: [], gaps: [],
+            };
+          }
+          if (action === "getPlayhead") return { seconds: 650.5, vTracks: 4 };
+          throw new Error("Unknown action " + action);
+        },
+      },
+    };
+    const rawJob = await createRawJob(ctx, { durationSec: 5, style: "excalidraw", background: "solid", trackIndex: 2, projectDir: rawProject }, rawKit);
+    check("raw job needs no loaded segments", rawJob.raw === true && rawJob.segmentIndexes.length === 0, rawJob);
+    check("raw job takes the sequence's real size and fps", rawJob.width === 3840 && rawJob.height === 2160 && rawJob.fps === 30 && rawJob.sizeSource === "sequence", rawJob);
+    check("raw job length becomes fixed frames", rawJob.durationInFrames === 150, rawJob.durationInFrames);
+    check("raw job is anchored at the playhead", approx(rawJob.range.startSec, 650.5) && approx(rawJob.range.endSec, 655.5), rawJob.range);
+    check("raw job keeps the chosen track", rawJob.trackIndex === 2, rawJob.trackIndex);
+    check("raw job scaffolds a brief + scene the agent can open",
+      existsSync(join(rawKit, "src", "jobs", rawJob.id, "brief.md")) &&
+      existsSync(join(rawKit, "src", "jobs", rawJob.id, "Scene.tsx")) &&
+      readFileSync(join(rawKit, "src", "jobs", "manifest.ts"), "utf8").includes(rawJob.id), null);
+    check("raw job's created notice says where it lands", /10:50/.test(readChat(rawJob)[0].text) && /V3/.test(readChat(rawJob)[0].text), readChat(rawJob)[0]);
+    let rawErr = null;
+    try { await createRawJob(ctx, { durationSec: 0, projectDir: rawProject }, rawKit); } catch (e) { rawErr = e.message; }
+    check("raw job refuses an unusable length", /between 0.5 and 600/.test(rawErr || ""), rawErr);
+    const defaulted = await createRawJob(ctx, { projectDir: rawProject }, rawKit);
+    check("raw job with no length takes the 5s default (it's set in the chat)", defaulted.durationInFrames === 150, defaulted.durationInFrames);
+
+    // setRawLength: the length is edited INSIDE the chat, so it rewrites the
+    // composition facts without ever touching the agent's Scene.tsx.
+    const sceneBefore = readFileSync(join(rawKit, "src", "jobs", rawJob.id, "Scene.tsx"), "utf8");
+    writeFileSync(join(rawKit, "src", "jobs", rawJob.id, "Scene.tsx"), "// the agent's work\n" + sceneBefore);
+    setRawLength(rawJob, rawKit, 8);
+    const kitJson = JSON.parse(readFileSync(join(rawKit, "src", "jobs", rawJob.id, "job.json"), "utf8"));
+    check("setRawLength retimes the composition", rawJob.durationInFrames === 240 && kitJson.durationInFrames === 240, [rawJob.durationInFrames, kitJson.durationInFrames]);
+    check("setRawLength keeps the placement anchor and moves the end", approx(rawJob.range.startSec, 650.5) && approx(rawJob.range.endSec, 658.5), rawJob.range);
+    check("setRawLength never overwrites the agent's scene",
+      readFileSync(join(rawKit, "src", "jobs", rawJob.id, "Scene.tsx"), "utf8").startsWith("// the agent's work"), null);
+    check("setRawLength refreshes the brief the agent reads",
+      readFileSync(join(rawKit, "src", "jobs", rawJob.id, "brief.md"), "utf8").includes("240 frames (8s)"), null);
+    check("setRawLength persists to the job record on disk",
+      JSON.parse(readFileSync(join(rawJob.outDir, "job.json"), "utf8")).durationInFrames === 240, null);
+    let lenErr = null;
+    try { setRawLength(rawJob, rawKit, 9999); } catch (e) { lenErr = e.message; }
+    check("setRawLength refuses an unusable length", /between 0.5 and 600/.test(lenErr || "") && rawJob.durationInFrames === 240, lenErr);
+    lenErr = null;
+    try { setRawLength({ ...rawJob, raw: false }, rawKit, 8); } catch (e) { lenErr = e.message; }
+    check("setRawLength refuses a segment-based job (the timeline sets its length)", /follows the timeline/.test(lenErr || ""), lenErr);
+  }
+
   // discard: flagged + kept on disk (a placed clip's render must not go offline), gone from the list
   discardJob(loaded[0], kitDir);
   const onDisk = JSON.parse(readFileSync(join(job3.outDir, "job.json"), "utf8"));
@@ -214,6 +298,8 @@ const sys = buildSystemAppend({ id: "anim-z", fps: 30, width: 1920, height: 1080
 check("system prompt pins the job folder + duration", sys.includes("src/jobs/anim-z/") && sys.includes("duration 90 frames (3.00s)"), sys);
 check("system prompt embeds the style skill", sys.includes("<style-skill>") && sys.includes("STYLE GUIDE HERE"), null);
 check("system prompt teaches the render.json protocol", sys.includes('render.json as {"version": N'), null);
+const rawSys = buildSystemAppend({ id: "anim-r", fps: 30, width: 1920, height: 1080, durationInFrames: 90, background: "solid", style: "excalidraw", raw: true }, "S");
+check("raw system prompt tells the agent there is no transcript", /STANDALONE/.test(rawSys) && /no transcript for this one/.test(rawSys) && !/narration with word timings/.test(rawSys), rawSys);
 
 /* ---------- headless spawn env (API-key scrub + pinned Claude login dir) ---------- */
 {

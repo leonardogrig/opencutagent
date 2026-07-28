@@ -4,6 +4,7 @@
 import { markDecisions, applyReview, summarize, computeExcessRanges } from "../review.js";
 import { createRpcDispatcher } from "../rpc/index.js";
 import { fmtDur, fmtElapsed } from "../tools/util.js";
+import { augmentPath, commonBinDirs, ffmpegBin, ffmpegMissingMessage, mergePath } from "../paths.js";
 
 let failures = 0;
 function check(label, cond, got) {
@@ -287,6 +288,39 @@ check("fmtDur: garbage and negatives never print NaN",
 check("fmtElapsed: wall clock stays in words, drops a bare zero",
   fmtElapsed(45) === "45s" && fmtElapsed(192) === "3m 12s" && fmtElapsed(300) === "5m" && fmtElapsed(3900) === "1h 05m",
   [fmtElapsed(45), fmtElapsed(192), fmtElapsed(300), fmtElapsed(3900)]);
+
+/* ---- binary lookup: the panel starts us with the bare GUI PATH ---- */
+{
+  const dirs = commonBinDirs({ platform: "darwin", home: "/Users/x", execPath: "/opt/homebrew/bin/node" });
+  check("commonBinDirs: node's own dir first (npm/npx live beside it)", dirs[0] === "/opt/homebrew/bin", dirs[0]);
+  check("commonBinDirs: covers homebrew, /usr/local and ~/.local/bin",
+    dirs.includes("/usr/local/bin") && dirs.includes("/Users/x/.local/bin"), dirs);
+  // (path.dirname is host-flavoured, so only assert what's platform-independent.)
+  const win = commonBinDirs({ platform: "win32", home: "C:/Users/x", execPath: "C:/node/node.exe" });
+  check("commonBinDirs: Windows looks beside node, never in /opt",
+    win[0] === "C:/node" && !win.some((d) => d.startsWith("/opt")), win);
+  check("mergePath: appends, keeps existing entries' priority",
+    mergePath("/usr/bin:/bin", ["/opt/homebrew/bin"]) === "/usr/bin:/bin:/opt/homebrew/bin",
+    mergePath("/usr/bin:/bin", ["/opt/homebrew/bin"]));
+  check("mergePath: never duplicates a dir already on PATH",
+    mergePath("/usr/bin:/opt/homebrew/bin", ["/opt/homebrew/bin", "/usr/local/bin"]) ===
+      "/usr/bin:/opt/homebrew/bin:/usr/local/bin");
+  check("mergePath: survives an empty/missing PATH",
+    mergePath("", ["/opt/homebrew/bin"]) === "/opt/homebrew/bin" && mergePath(undefined, []) === "");
+  const env = { PATH: "/usr/bin:/bin:/usr/sbin:/sbin" };
+  augmentPath(env);
+  check("augmentPath: widens the bare GUI PATH", env.PATH.split(":").length > 4, env.PATH);
+  const prevBin = process.env.FFMPEG_BIN;
+  process.env.FFMPEG_BIN = "/custom/ffmpeg";
+  check("ffmpegBin: FFMPEG_BIN override wins", ffmpegBin() === "/custom/ffmpeg", ffmpegBin());
+  if (prevBin === undefined) delete process.env.FFMPEG_BIN;
+  else process.env.FFMPEG_BIN = prevBin;
+  check("ffmpegBin: falls back to a resolvable name", /ffmpeg(\.exe)?$/.test(ffmpegBin()), ffmpegBin());
+  check("ffmpegMissingMessage: names the binary and both fixes",
+    /"\/x\/ffmpeg"/.test(ffmpegMissingMessage("/x/ffmpeg", "ENOENT")) &&
+      /brew install ffmpeg/.test(ffmpegMissingMessage("/x/ffmpeg")) &&
+      /FFMPEG_BIN/.test(ffmpegMissingMessage("/x/ffmpeg")));
+}
 
 console.log(failures === 0 ? "\nAll feature checks passed." : `\n${failures} check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);

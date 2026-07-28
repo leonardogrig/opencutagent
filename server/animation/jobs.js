@@ -10,7 +10,7 @@ import {
 import { join, basename } from "node:path";
 import { reconcile, requireReview } from "../review.js";
 import { readCachedWords } from "../transcription/transcribe.js";
-import { round3, mmss, fmtDur, fmtElapsed as fmtElapsedSec } from "../tools/util.js";
+import { round3, mmss, fmtDur, fmtElapsed as fmtElapsedSec, getTimeline, callHostHealing } from "../tools/util.js";
 import { kitDir } from "./kit.js";
 import { liveEnv } from "../config.js";
 import { log } from "../log.js";
@@ -44,6 +44,18 @@ export function normalizeSizeOverride(w, h) {
   if (!Number.isFinite(W) || !Number.isFinite(H)) return null;
   if (W < 16 || H < 16 || W > 8192 || H > 8192) return null;
   return { width: W - (W % 2), height: H - (H % 2) };
+}
+
+/**
+ * Validate a raw animation's length in seconds (the panel's Length field).
+ * Returns the clamped duration or null when it isn't a usable number, so a bad
+ * value is refused instead of silently becoming 5s. Pure (unit-tested).
+ */
+export const RAW_MIN_SEC = 0.5, RAW_MAX_SEC = 600, RAW_DEFAULT_SEC = 5;
+export function normalizeRawDuration(sec) {
+  const n = Number(sec);
+  if (!Number.isFinite(n) || n < RAW_MIN_SEC || n > RAW_MAX_SEC) return null;
+  return round3(n);
 }
 
 /** "18432" -> "18.4k" for the placed-notice token count. Pure (unit-tested). */
@@ -256,6 +268,30 @@ export function buildBrief(job, { selected, transcriptLines, wordsBySegment = ne
   return lines.join("\n");
 }
 
+/**
+ * The brief for a RAW animation: no transcript, no narration, no selected
+ * range. Everything the agent needs to know comes from the chat. Pure
+ * (unit-tested).
+ */
+export function buildRawBrief(job) {
+  const durSec = round3(job.durationInFrames / job.fps);
+  return [
+    `# Animation brief: ${job.id}`,
+    "",
+    `- Canvas: ${job.width}x${job.height} @ ${job.fps} fps`,
+    `- Duration: ${job.durationInFrames} frames (${durSec}s). FIXED: fill exactly this time.`,
+    `- Background: ${job.background === "transparent" ? "transparent (overlay on the footage; use <Canvas transparent>)" : "solid dark canvas (covers the footage like b-roll; use <Canvas>)"}`,
+    `- Style: ${job.style}`,
+    "",
+    "## What you are animating",
+    "This is a STANDALONE animation. It is NOT tied to the video's transcript:",
+    "there is no narration to sync to and no script to follow. The user tells you",
+    `in the chat exactly what to build. It lands on the timeline at ${mmss(job.range.startSec)},`,
+    "so pace the whole thing to fill the fixed duration on its own.",
+    "",
+  ].join("\n");
+}
+
 /* ============================ create / persist ============================ */
 
 /** Round a sequence rate to something Remotion-friendly (30.00003 -> 30; 29.97 stays). */
@@ -309,6 +345,108 @@ export function appendChat(job, entry) {
 }
 
 /**
+ * The sequence's frame size, from either shape it arrives in: getTimeline()
+ * normalizes the host's frameSizeHorizontal/Vertical into frameSize{width,height},
+ * so reading only one of the two silently composes everything at 1920x1080.
+ * Returns {width,height} or null when the host couldn't report it. Pure.
+ */
+export function sequenceFrameSize(seq) {
+  const s = seq || {};
+  const w = Number((s.frameSize && s.frameSize.width) || s.frameSizeHorizontal);
+  const h = Number((s.frameSize && s.frameSize.height) || s.frameSizeVertical);
+  return w > 0 && h > 0 ? { width: w, height: h } : null;
+}
+
+/**
+ * Resolve the composition size from the sequence unless the panel pinned one
+ * (4K/vertical/custom). sizeSource:"custom" also disables the render-time
+ * sequence-size matching, so the user's choice always wins.
+ */
+function resolveSize(seq, widthOpt, heightOpt) {
+  const override = normalizeSizeOverride(widthOpt, heightOpt);
+  const seqSize = sequenceFrameSize(seq);
+  const width = override ? override.width : (seqSize ? seqSize.width : 1920);
+  const height = override ? override.height : (seqSize ? seqSize.height : 1080);
+  if (!override && !seqSize) {
+    // Render-time --scale still corrects same-aspect sizes, but log the gap.
+    log(`animation: sequence frame size unavailable, composing at ${width}x${height}`);
+  }
+  return { width, height, sizeSource: override ? "custom" : "sequence" };
+}
+
+/** Write the kit-side job folder (where the agent works) and register the composition. */
+function scaffoldKitJob(job, kitDirPath, briefText) {
+  const jobDir = join(kitDirPath, "src", "jobs", job.id);
+  mkdirSync(join(jobDir, "refs"), { recursive: true });
+  writeFileSync(join(jobDir, "job.json"), JSON.stringify({
+    id: job.id, fps: job.fps, width: job.width, height: job.height,
+    durationInFrames: job.durationInFrames, background: job.background, style: job.style,
+  }, null, 2));
+  writeFileSync(join(jobDir, "Scene.tsx"), sceneScaffold(job, {
+    styleHasSrc: existsSync(join(kitDirPath, "styles", job.style, "src", "index.ts")),
+  }));
+  writeFileSync(join(jobDir, "brief.md"), briefText);
+  return jobDir;
+}
+
+/**
+ * Create a RAW animation: not tied to the transcript at all. The user picks a
+ * length (default 5s) and the clip lands at the playhead's CURRENT position,
+ * which is captured now so the target is predictable even if the playhead moves
+ * while the agent works.
+ */
+export async function createRawJob(ctx, { durationSec, style, background, trackIndex, projectDir, width: widthOpt, height: heightOpt }, kitDirPath) {
+  // The length is set INSIDE the chat (it's editable there), so creating one
+  // takes the default and the user tunes it next to the conversation.
+  const dur = durationSec == null ? RAW_DEFAULT_SEC : normalizeRawDuration(durationSec);
+  if (dur == null) throw new Error(`Enter a length between ${RAW_MIN_SEC} and ${RAW_MAX_SEC} seconds.`);
+
+  const timeline = await getTimeline(ctx);
+  const seq = timeline.sequence || {};
+  const fps = renderFps(seq.frameRate || 30);
+  const { width, height, sizeSource } = resolveSize(seq, widthOpt, heightOpt);
+
+  let startSec = 0;
+  try {
+    const ph = await callHostHealing(ctx, "getPlayhead", {}, { timeoutMs: 15000 });
+    if (ph && Number.isFinite(Number(ph.seconds))) startSec = Math.max(0, round3(Number(ph.seconds)));
+  } catch { /* playhead unreadable: place at the start of the sequence */ }
+
+  const id = newJobId();
+  const job = {
+    id,
+    title: "Raw animation",
+    createdAt: Date.now(),
+    raw: true,
+    style: style || "excalidraw",
+    background: background === "transparent" ? "transparent" : "solid",
+    trackIndex: clampTrackIndex(trackIndex),
+    sizeSource,
+    fps, width, height,
+    durationInFrames: Math.max(1, Math.round(dur * fps)),
+    range: { startSec, endSec: round3(startSec + dur) },
+    segmentIndexes: [],
+    sequence: seq.name || null,
+    sessionId: null,
+    lastRenderedVersion: 0,
+    renders: [],
+    placed: null,
+    projectDir,
+    outDir: join(jobsRootFor(projectDir), id),
+  };
+
+  scaffoldKitJob(job, kitDirPath, buildRawBrief(job));
+  regenerateManifest(kitDirPath);
+  saveJob(job);
+  appendChat(job, {
+    role: "system",
+    kind: "created",
+    text: `Raw animation, ${fmtDur(dur)}. It lands at ${mmss(startSec)} on V${job.trackIndex + 1} once the agent finishes.`,
+  });
+  return job;
+}
+
+/**
  * Create a job from the current selection: validates contiguity against the
  * LIVE timeline, captures size/fps from the sequence, scaffolds the kit job
  * folder + brief, registers the composition, and persists the job record next
@@ -322,16 +460,7 @@ export async function createJob(ctx, { indexes, style, background, trackIndex, p
 
   const seq = timeline.sequence || {};
   const fps = renderFps(seq.frameRate || review.frameRate || 30);
-  // The panel may pin an explicit output size (4K/vertical/custom); otherwise
-  // the composition matches the sequence. sizeSource:"custom" also disables the
-  // render-time sequence-size matching, so the user's choice always wins.
-  const override = normalizeSizeOverride(widthOpt, heightOpt);
-  const width = override ? override.width : (Number(seq.frameSizeHorizontal) || 1920);
-  const height = override ? override.height : (Number(seq.frameSizeVertical) || 1080);
-  if (!override && (!Number(seq.frameSizeHorizontal) || !Number(seq.frameSizeVertical))) {
-    // Render-time --scale still corrects same-aspect sizes, but log the gap.
-    log(`animation: sequence frame size unavailable, composing at ${width}x${height}`);
-  }
+  const { width, height, sizeSource } = resolveSize(seq, widthOpt, heightOpt);
   const durationSec = check.range.endSec - check.range.startSec;
   const durationInFrames = Math.max(1, Math.round(durationSec * fps));
   if (durationSec < 0.5) throw new Error("The selected range is shorter than half a second. Select a longer run of segments.");
@@ -347,7 +476,7 @@ export async function createJob(ctx, { indexes, style, background, trackIndex, p
     style: style || "excalidraw",
     background: background === "transparent" ? "transparent" : "solid",
     trackIndex: clampTrackIndex(trackIndex),
-    sizeSource: override ? "custom" : "sequence",
+    sizeSource,
     fps, width, height, durationInFrames,
     range: check.range,
     segmentIndexes: check.indexes,
@@ -359,16 +488,6 @@ export async function createJob(ctx, { indexes, style, background, trackIndex, p
     projectDir,
     outDir: join(jobsRootFor(projectDir), id),
   };
-
-  // Kit job folder (where the agent works)
-  const jobDir = join(kitDirPath, "src", "jobs", id);
-  mkdirSync(join(jobDir, "refs"), { recursive: true });
-  writeFileSync(join(jobDir, "job.json"), JSON.stringify({
-    id, fps, width, height, durationInFrames, background: job.background, style: job.style,
-  }, null, 2));
-  writeFileSync(join(jobDir, "Scene.tsx"), sceneScaffold(job, {
-    styleHasSrc: existsSync(join(kitDirPath, "styles", job.style, "src", "index.ts")),
-  }));
 
   // Brief: selected narration (with word timing when cached) + whole transcript
   const byIndex = new Map(map.map((m) => [m.index, m]));
@@ -395,11 +514,37 @@ export async function createJob(ctx, { indexes, style, background, trackIndex, p
   const transcriptLines = review.segments
     .filter((s) => s.text && s.fragment !== "empty")
     .map((s) => `${selectedSet.has(s.index) ? ">>> " : "- "}[${mmss(s.startSec)}] ${s.text}`);
-  writeFileSync(join(jobDir, "brief.md"), buildBrief(job, { selected, transcriptLines, wordsBySegment }));
+  scaffoldKitJob(job, kitDirPath, buildBrief(job, { selected, transcriptLines, wordsBySegment }));
 
   regenerateManifest(kitDirPath);
   saveJob(job);
   appendChat(job, { role: "system", kind: "created", text: `Animation created for ${selected.length} segment(s), ${fmtDur(durationSec)}.` });
+  return job;
+}
+
+/**
+ * Change a RAW animation's length from inside its chat. The composition's frame
+ * count is a fixed fact the agent builds against, so this rewrites job.json +
+ * the manifest + the brief — but NEVER Scene.tsx, which is the agent's work.
+ * The agent picks the new duration up on its next turn (the system prompt and
+ * brief are rebuilt per turn). Mutates and returns the job record.
+ */
+export function setRawLength(job, kitDirPath, durationSec) {
+  if (!job.raw) throw new Error("Only a raw animation's length can be changed; one built for selected segments follows the timeline.");
+  const dur = normalizeRawDuration(durationSec);
+  if (dur == null) throw new Error(`Enter a length between ${RAW_MIN_SEC} and ${RAW_MAX_SEC} seconds.`);
+  job.durationInFrames = Math.max(1, Math.round(dur * job.fps));
+  job.range = { startSec: job.range.startSec, endSec: round3(job.range.startSec + dur) };
+
+  const jobDir = join(kitDirPath, "src", "jobs", job.id);
+  mkdirSync(jobDir, { recursive: true });
+  writeFileSync(join(jobDir, "job.json"), JSON.stringify({
+    id: job.id, fps: job.fps, width: job.width, height: job.height,
+    durationInFrames: job.durationInFrames, background: job.background, style: job.style,
+  }, null, 2));
+  writeFileSync(join(jobDir, "brief.md"), buildRawBrief(job));
+  regenerateManifest(kitDirPath);
+  saveJob(job);
   return job;
 }
 

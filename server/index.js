@@ -9,6 +9,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 import { loadEnv } from "./env.js";
+import { augmentPath } from "./paths.js";
 import { log } from "./log.js";
 import { PremiereBridge } from "./bridge.js";
 import { tools, toolsByName } from "./tools/index.js";
@@ -20,6 +21,10 @@ const projectRoot = dirname(__dirname);
 
 // Load env: project .env first, then cwd .env (process.env always wins).
 loadEnv([join(projectRoot, ".env"), join(process.cwd(), ".env")]);
+
+// When the panel auto-starts us from Premiere we inherit the bare GUI PATH, so
+// ffmpeg/npm/claude would be "not found" even though they're installed.
+augmentPath();
 
 const cacheDir = process.env.EDITAGENT_CACHE_DIR || join(projectRoot, ".cache");
 mkdirSync(cacheDir, { recursive: true });

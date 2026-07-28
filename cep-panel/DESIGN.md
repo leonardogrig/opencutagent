@@ -172,7 +172,20 @@ primary buttons keep crisp dark labels (white-on-Ember is only ~3.1:1).
   (62px wide, rounded down to even server-side). All freeze/hide once a job is
   open — fixed at creation; a pinned size shows in the job meta ("· 3840x2160").
   Drag-drop images onto the chat = `.dragging` dashed outline. Selected
-  `.segctl` pills are a JS-set `.on` class (no `:has()`).
+  `.segctl` pills are a JS-set `.on` class (no `:has()`). The picker footer's
+  `.apply-row` holds a secondary **Raw animation** button (`flex:none` so the
+  primary keeps its label on one line) left of the primary **Start animation
+  chat**: raw = an animation with no transcript behind it, enabled with nothing
+  selected. Its **length is a control INSIDE the chat** — an `.anim-rawlen`
+  field in the `.anim-jobinfo` header (replacing the static duration; delegated
+  events, commits on Enter/blur, changeable between turns) rather than a
+  pre-flight input, since there's nothing to judge a length against until you
+  see the conversation. Raw jobs read "· raw" in their list meta.
+- **Toasts never sit on an input.** `.toast` is pinned to the panel's bottom
+  edge, which is also where the animation composer lives, so `toast()` lifts it
+  by the open `.anim-inputbox`'s height (inline `bottom`). Anything the chat
+  already says as a `.anim-msg.system` bubble (created / placed) does NOT also
+  toast.
 
 ## Constraints / gotchas
 

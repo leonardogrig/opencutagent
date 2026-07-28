@@ -165,10 +165,18 @@
   }
 
   var toastTimer = null;
+  // The toast is pinned to the panel's bottom edge, where the animation chat's
+  // composer also lives — sitting ON the text area you are typing in is no good,
+  // so it rides above whatever input dock is currently open.
+  function toastLift() {
+    var box = document.querySelector("#animChatWrap:not(.hidden) .anim-inputbox");
+    return box && box.offsetHeight ? box.offsetHeight : 0;
+  }
   function toast(text, type) {
     var t = $("toast"); if (!t) return;
     type = type || "info";
     t.innerHTML = '<span class="toast-ic">' + (TOAST_IC[type] || TOAST_IC.info) + '</span><span class="toast-msg">' + esc(text) + "</span>";
+    t.style.bottom = "calc(var(--sp-3) + " + toastLift() + "px)";
     t.className = "toast show " + type;
     clearTimeout(toastTimer);
     toastTimer = setTimeout(function () { t.className = "toast " + type; }, 5000);
@@ -2413,7 +2421,7 @@
     function cache() {
       ["animStyle", "animStyleWrap", "animBgCtl", "animTrack", "animTrackWrap", "animFollow", "animBackBtn",
        "animSize", "animSizeWrap", "animOrientCtl", "animSizeCustom", "animW", "animH",
-       "animSelect", "animStatus", "animJobs", "animSegs",
+       "animSelect", "animStatus", "animJobs", "animSegs", "animRawBtn",
        "animSelSummary", "animCreateBtn", "animChatWrap", "animJobInfo", "animChatLog",
        "animAttach", "animText", "animSendBtn", "animStopBtn", "animImgBtn", "animFile"]
         .forEach(function (id) { el[id] = $(id); });
@@ -2593,6 +2601,7 @@
         html += '<div class="anim-job" data-job="' + esc(j.id) + '">' +
           '<span class="anim-job-name">' + esc(j.title || j.id) + "</span>" +
           '<span class="anim-job-meta">' + (j.durationSec != null ? fmtDur(j.durationSec) : "") +
+          (j.raw ? " · raw" : "") +
           " · " + esc(j.background === "transparent" ? "no bg" : "solid") +
           (j.sizeSource === "custom" ? " · " + j.width + "x" + j.height : "") +
           (j.createdAt ? " · " + fmtAgo(j.createdAt) : "") + "</span>" +
@@ -2620,7 +2629,7 @@
     function renderSegs() {
       var loaded = Retake.isLoaded();
       if (!loaded) {
-        el.animSegs.innerHTML = '<div class="empty-state"><div class="es-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5z"/><rect x="3" y="16" width="18" height="5" rx="1.5"/></svg></div><div class="es-title">No segments loaded</div><div class="es-sub">Load segments in the <b>Retakes</b> tab first, then pick a run of neighboring segments here to animate over.</div></div>';
+        el.animSegs.innerHTML = '<div class="empty-state"><div class="es-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5z"/><rect x="3" y="16" width="18" height="5" rx="1.5"/></svg></div><div class="es-title">No segments loaded</div><div class="es-sub">Load segments in the <b>Retakes</b> tab first, then pick a run of neighboring segments here to animate over. Or start a <b>raw animation</b> below: it needs no transcript and lands at the playhead.</div></div>';
         return;
       }
       var segs = eligible();
@@ -2741,9 +2750,16 @@
     function renderChat() {
       var job = activeJob();
       if (!job) return;
+      // A raw animation's length is ITS OWN control here (nothing on the
+      // timeline dictates it), so the header shows an editable field instead of
+      // a static duration.
+      var lenHtml = job.raw
+        ? '<label class="anim-rawlen" data-tip="How long this animation is. Change it any time between turns: the agent builds to the new length on its next reply.">' +
+          '<input type="number" id="animLenInput" min="0.5" max="600" step="0.5" value="' + esc(String(Math.round(job.durationSec * 10) / 10)) + '"' + (state.busy ? " disabled" : "") + " /><span>s</span></label>"
+        : "";
       el.animJobInfo.innerHTML =
-        '<span class="anim-job-name">' + esc(job.title || job.id) + "</span>" +
-        '<span class="anim-job-meta">' + fmtDur(job.durationSec) + " · " +
+        '<span class="anim-job-name">' + esc(job.title || job.id) + "</span>" + lenHtml +
+        '<span class="anim-job-meta">' + (job.raw ? "" : fmtDur(job.durationSec) + " · ") +
         esc(job.background === "transparent" ? "no bg" : "solid bg") + " · " + esc(job.style) +
         (job.sizeSource === "custom" ? " · " + job.width + "x" + job.height : "") + "</span>" +
         '<span class="seg-badges">' + jobBadge(job, true) + "</span>" +
@@ -2755,7 +2771,9 @@
       var chat = job.chat || [];
       for (i = 0; i < chat.length; i++) html += msgHtml(chat[i]);
       if (!chat.length || (chat.length === 1 && chat[0].role === "system")) {
-        html += '<div class="anim-msg system"><span>Tell the agent what to build for this narration. It knows the transcript and the exact duration; attach reference images if it helps.</span></div>';
+        html += '<div class="anim-msg system"><span>' + (job.raw
+          ? "Describe the animation you want. This one is not based on your transcript, so tell the agent everything it should show; attach reference images if it helps."
+          : "Tell the agent what to build for this narration. It knows the transcript and the exact duration; attach reference images if it helps.") + "</span></div>";
       }
       el.animChatLog.innerHTML = html;
       state.activityEl = null; state.activityText = null; // wiped with the log
@@ -2916,29 +2934,37 @@
       renderSegs(); renderJobs(); updateButtons();
       if (activeTab === "anim") startPoll();
     }
-    function create() {
-      if (!connected() || state.busy || !state.selection.length) return;
+    // raw = true: no segments, placed at the playhead, and its length is set
+    // inside the chat (see setLength) rather than before there's anything to see.
+    function create(raw) {
+      if (!connected() || state.busy) return;
+      if (!raw && !state.selection.length) return;
       var size = chosenSize();
       if (size && size.error) { toast(size.error, "error"); return; }
+      var btn = raw ? el.animRawBtn : el.animCreateBtn;
+      var label = raw ? "Raw animation" : "Start animation chat";
       state.busy = true; updateButtons();
-      setLoading(el.animCreateBtn, true, "Creating…");
+      setLoading(btn, true, "Creating…");
       setStatus("Creating the animation…");
       var p = AI.params();
-      var params = { segments: state.selection, style: state.style, background: state.background, track: parseInt(state.track, 10), model: p.model, effort: p.effort };
+      var params = { style: state.style, background: state.background, track: parseInt(state.track, 10), model: p.model, effort: p.effort };
+      if (raw) params.raw = true; // the server's default length; editable in the chat
+      else params.segments = state.selection;
       if (size) { params.width = size.width; params.height = size.height; }
       callServer("animCreate", params, function (m) { setStatus(m); }).then(
         function (res) {
           state.busy = false;
-          setLoading(el.animCreateBtn, false, "Start animation chat");
+          setLoading(btn, false, label);
           setStatus("");
           state.selection = []; state.anchor = null;
+          // No toast: the chat we just opened already says it was created (and a
+          // toast at the bottom would sit on the composer).
           if (res && res.job) { upsertJob(res.job); renderJobs(); openJob(res.job.id); }
-          toast((res && res.message) || "Animation created.", "success");
           updateButtons();
         },
         function (err) {
           state.busy = false;
-          setLoading(el.animCreateBtn, false, "Start animation chat");
+          setLoading(btn, false, label);
           var cancelled = /cancel/i.test(err.message);
           setStatus(cancelled ? "Stopped." : err.message, !cancelled);
           if (!cancelled) toast(err.message, "error");
@@ -2963,7 +2989,8 @@
           state.busy = false;
           if (res) appendAssistantReply(res.text); // no-op if the assistantDone push already did
           setChatStatus("");
-          if (res && res.placed) toast(res.placed, "success");
+          // A placed notice is already a bubble in this chat (pushed live, and
+          // re-rendered from the persisted history below) — no toast on top of it.
           refreshState(); // pick up the persisted chat + placed/render state
           updateButtons();
         },
@@ -2979,6 +3006,29 @@
       );
     }
     function stop() { if (!state.busy) return; callServer("animCancel", {}).catch(function () {}); setChatStatus("Stopping…"); }
+    /* ---- raw length, edited in the chat header ---- */
+    var RAW_MIN = 0.5, RAW_MAX = 600;
+    function setLength(input) {
+      var job = activeJob();
+      if (!job || !job.raw) return;
+      var v = parseFloat(input.value);
+      if (!isFinite(v) || v < RAW_MIN || v > RAW_MAX) {
+        toast("Enter a length between " + RAW_MIN + " and " + RAW_MAX + " seconds.", "error");
+        input.value = String(Math.round(job.durationSec * 10) / 10); // put the live value back
+        return;
+      }
+      v = Math.round(v * 1000) / 1000;
+      if (Math.abs(v - job.durationSec) < 0.001) return; // unchanged (blur after Enter)
+      if (!connected() || state.busy) { input.value = String(Math.round(job.durationSec * 10) / 10); return; }
+      input.disabled = true;
+      callServer("animSetLength", { jobId: job.id, durationSec: v }).then(
+        function (res) {
+          if (res && res.job) upsertJob(res.job);
+          renderChat(); // redraws the field + shows the "Length set to 8s." notice
+        },
+        function (err) { toast(err.message, "error"); renderChat(); }
+      );
+    }
 
     /* ---- server pushes (streamed turn events) ---- */
     function onEvent(msg) {
@@ -3064,6 +3114,7 @@
       setBusyBar("anim", state.busy);
       var conn = connected();
       el.animCreateBtn.disabled = !conn || state.busy || !state.selection.length;
+      el.animRawBtn.disabled = !conn || state.busy;          // never needs a selection
       el.animSendBtn.disabled = !conn || state.busy || !state.activeJobId;
       el.animSendBtn.style.display = state.busy && state.activeJobId ? "none" : "";
       el.animStopBtn.style.display = state.busy && state.activeJobId ? "" : "none";
@@ -3142,7 +3193,16 @@
       el.animH.addEventListener("change", persistPrefs);
       el.animFollow.checked = state.follow;
       el.animFollow.addEventListener("change", function () { state.follow = el.animFollow.checked; persistPrefs(); });
-      el.animCreateBtn.addEventListener("click", create);
+      // The raw length lives in the chat header, which is rebuilt on every
+      // render, so its events are delegated.
+      el.animJobInfo.addEventListener("change", function (ev) {
+        if (ev.target && ev.target.id === "animLenInput") setLength(ev.target);
+      });
+      el.animJobInfo.addEventListener("keydown", function (ev) {
+        if (ev.target && ev.target.id === "animLenInput" && ev.key === "Enter") { ev.preventDefault(); ev.target.blur(); }
+      });
+      el.animRawBtn.addEventListener("click", function () { create(true); });
+      el.animCreateBtn.addEventListener("click", function () { create(false); });
       el.animBackBtn.addEventListener("click", closeJob);
       el.animSendBtn.addEventListener("click", send);
       el.animStopBtn.addEventListener("click", stop);

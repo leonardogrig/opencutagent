@@ -5,6 +5,7 @@ import { basename, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { log } from "../log.js";
 import { liveEnv } from "../config.js";
+import { ffmpegBin, ffmpegMissingMessage } from "../paths.js";
 import { cloudEnabled, cloudTranscribe } from "../cloud.js";
 import { recordUsage } from "../usage.js";
 
@@ -13,7 +14,6 @@ const SCRIBE_URL = "https://api.elevenlabs.io/v1/speech-to-text";
 const scribeRatePerHourUsd = () => Number(liveEnv("EDITAGENT_SCRIBE_RATE") || 0.22);
 // Model precedence: explicit opt (panel dropdown) > .env > default.
 const scribeModel = (m) => m || liveEnv("EDITAGENT_SCRIBE_MODEL") || "scribe_v2";
-const FFMPEG_BIN = process.env.FFMPEG_BIN || "ffmpeg";
 
 /**
  * Pluggable transcription engine interface. v1 ships ElevenLabs Scribe; the
@@ -38,9 +38,7 @@ function run(bin, args, onStderrChunk) {
       if (stderr.length > 8192) stderr = stderr.slice(-4096); // keep the tail for error messages
       if (onStderrChunk) { try { onStderrChunk(s); } catch { /* progress must never kill the job */ } }
     });
-    p.on("error", (e) =>
-      reject(new TranscribeError(`Could not run "${bin}": ${e.message}. Is it installed and on PATH?`))
-    );
+    p.on("error", (e) => reject(new TranscribeError(ffmpegMissingMessage(bin, e.message))));
     p.on("close", (code) =>
       code === 0 ? resolve() : reject(new TranscribeError(`${bin} exited ${code}: ${stderr.slice(-500)}`))
     );
@@ -58,7 +56,7 @@ const SEEK_CUSHION_SEC = 2;
 function extractAudioRange(mediaPath, startSec, endSec, destWav) {
   const dur = Math.max(0.05, endSec - startSec);
   const seek = Math.max(0, startSec - SEEK_CUSHION_SEC);
-  return run(FFMPEG_BIN, [
+  return run(ffmpegBin(), [
     "-y", "-ss", String(seek), "-i", mediaPath,
     "-ss", String(Math.max(0, startSec) - seek), "-t", String(dur),
     "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
@@ -106,7 +104,7 @@ function extractConcatAudio(mediaPath, islands, spacerSec, destWav, onOutSec) {
   const onChunk = onOutSec
     ? (chunk) => { const sec = parseFfmpegOutTime(chunk); if (sec != null) onOutSec(sec); }
     : undefined;
-  const done = run(FFMPEG_BIN, [
+  const done = run(ffmpegBin(), [
     "-y", "-ss", String(seek), "-i", mediaPath,
     "-filter_complex_script", scriptPath,
     "-map", "[out]",

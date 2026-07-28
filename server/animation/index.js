@@ -11,8 +11,9 @@
 import { basename } from "node:path";
 import { ensureKit, listStyles, readStyleSkill } from "./kit.js";
 import {
-  createJob, discardJob, loadJobsFrom, readChat, appendChat, saveJob, snapshotScene,
-  readRenderSignal, saveRefImage, animTrackIndex, fmtTokens, fmtElapsed,
+  createJob, createRawJob, discardJob, loadJobsFrom, readChat, appendChat, saveJob, snapshotScene,
+  readRenderSignal, saveRefImage, animTrackIndex, fmtTokens, fmtElapsed, sequenceFrameSize,
+  setRawLength,
 } from "./jobs.js";
 import { runChatTurn } from "./chat.js";
 import { renderJob, renderScale } from "./render.js";
@@ -61,6 +62,7 @@ function jobSummary(job) {
     id: job.id,
     title: job.title || job.id,
     createdAt: job.createdAt,
+    raw: !!job.raw,
     style: job.style,
     background: job.background,
     trackIndex: job.trackIndex != null ? job.trackIndex : animTrackIndex(),
@@ -90,6 +92,19 @@ async function placeRender(ctx, job, renderInfo, onStatus) {
   onStatus("Placing the clip on the timeline…");
   let target = job.range.startSec;
   let warning = null;
+  // A raw animation isn't tied to any segment: it goes where the playhead was
+  // when it was created, so there is nothing to reconcile.
+  if (!job.segmentIndexes || !job.segmentIndexes.length) {
+    const trackIdx = job.trackIndex != null ? job.trackIndex : animTrackIndex();
+    await callHostHealing(ctx, "importFootage", { path: renderInfo.path }, { timeoutMs: 60000 });
+    const r = await callHostHealing(ctx, "placeFootage", { path: renderInfo.path, targetSeconds: target, trackIndex: trackIdx }, { timeoutMs: 60000 });
+    return {
+      ok: !!(r && r.ok),
+      targetSeconds: r ? r.targetSeconds : target,
+      trackIndex: trackIdx,
+      warning: r && r.ok ? null : "Premiere didn't confirm the clip landed; check the timeline (Cmd+Z reverts).",
+    };
+  }
   try {
     requireReview(ctx);
     const { map } = await reconcile(ctx);
@@ -133,7 +148,8 @@ async function renderAndPlace(ctx, job, kitPath, signal, token, stats = null) {
   if (job.sizeSource !== "custom") {
     try {
       const timeline = await getTimeline(ctx);
-      const s = renderScale(job, timeline.sequence && timeline.sequence.frameSizeHorizontal, timeline.sequence && timeline.sequence.frameSizeVertical);
+      const live = sequenceFrameSize(timeline.sequence);
+      const s = renderScale(job, live && live.width, live && live.height);
       scale = s.scale;
       scaleWarning = s.warning;
       if (s.outWidth && s.scale !== 1) status(`Rendering at the sequence's ${s.outWidth}p width…`);
@@ -199,8 +215,10 @@ async function animState(_params, _helpers, ctx) {
 }
 
 /**
- * Create an animation job for the selected contiguous segments. First run also
- * sets up the animation workspace (npm install) — progress streams to the panel.
+ * Create an animation job: either for the selected contiguous segments, or —
+ * with params.raw — a standalone one of a chosen length that lands at the
+ * playhead and ignores the transcript entirely. First run also sets up the
+ * animation workspace (npm install) — progress streams to the panel.
  */
 async function animCreate(params, helpers, ctx) {
   return cancellableAnim(ctx, async (token) => {
@@ -210,15 +228,17 @@ async function animCreate(params, helpers, ctx) {
     const kitPath = await ensureKit({ onProgress: helpers.progress, token });
     if (token.aborted) throw new Error("Cancelled");
     helpers.progress("Creating the animation…");
-    const job = await createJob(ctx, {
-      indexes: params.segments,
+    const common = {
       style: params.style,
       background: params.background,
       trackIndex: params.track,
       width: params.width,
       height: params.height,
       projectDir: dir,
-    }, kitPath);
+    };
+    const job = params.raw
+      ? await createRawJob(ctx, { ...common, durationSec: params.durationSec }, kitPath)
+      : await createJob(ctx, { ...common, indexes: params.segments }, kitPath);
     a.jobs.set(job.id, job);
     return { job: jobSummary(job), message: `Animation ${job.id} created (${fmtDur(job.durationInFrames / job.fps)}). Tell the agent what to build.` };
   });
@@ -312,6 +332,23 @@ async function animChat(params, _helpers, ctx) {
   });
 }
 
+/**
+ * Set a raw animation's length from its chat. Refused mid-turn: the agent is
+ * building against the current frame count, and the manifest would change under
+ * a render that's already running.
+ */
+async function animSetLength(params, _helpers, ctx) {
+  if (ctx.animOp) throw new Error("The animation agent is still working. Wait for it to finish or press Stop, then change the length.");
+  const job = getJob(ctx, params.jobId);
+  const kitPath = await ensureKit({});
+  setRawLength(job, kitPath, params.durationSec);
+  const dur = job.durationInFrames / job.fps;
+  const text = `Length set to ${fmtDur(dur)}.` +
+    (job.lastRenderedVersion ? " Ask for a new version to re-render at the new length." : "");
+  appendChat(job, { role: "system", kind: "length", text });
+  return { job: jobSummary(job), message: text };
+}
+
 /** Stop the in-flight chat turn / render (kills the child processes). */
 async function animCancel(_params, _helpers, ctx) {
   if (ctx.animOp) {
@@ -337,4 +374,4 @@ async function animDiscard(params, _helpers, ctx) {
   return { ok: true, message: `Deleted ${job.id} from the list.` + (params.deleteOutputs ? "" : " Any clip it placed stays on the timeline (its rendered file is kept).") };
 }
 
-export const animHandlers = { animStyles, animState, animCreate, animChat, animCancel, animDiscard };
+export const animHandlers = { animStyles, animState, animCreate, animChat, animCancel, animDiscard, animSetLength };

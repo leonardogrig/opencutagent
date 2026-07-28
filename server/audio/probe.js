@@ -10,8 +10,7 @@
 import { spawn } from "node:child_process";
 import { statSync } from "node:fs";
 import { log } from "../log.js";
-
-const FFMPEG_BIN = process.env.FFMPEG_BIN || "ffmpeg";
+import { ffmpegBin } from "../paths.js";
 
 /** Whether an `ffmpeg -i` stderr dump lists at least one audio stream. Pure (unit-tested). */
 export function stderrListsAudio(text) {
@@ -32,7 +31,7 @@ export function hasAudioStream(mediaPath) {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(FFMPEG_BIN, ["-hide_banner", "-nostdin", "-i", mediaPath], { stdio: ["ignore", "ignore", "pipe"] });
+      child = spawn(ffmpegBin(), ["-hide_banner", "-nostdin", "-i", mediaPath], { stdio: ["ignore", "ignore", "pipe"] });
     } catch {
       resolve(true);
       return;
