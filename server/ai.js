@@ -124,6 +124,54 @@ export const FALLBACK_MODELS = [
   { value: "fable", displayName: "Fable", description: "For the hardest, longest-running tasks" },
 ];
 
+/**
+ * Version number of a model, derived from the CLI's own fields.
+ *
+ * The handshake's displayName is version-LESS ("Opus (1M context)", "Haiku"),
+ * which reads as if the panel were pinned to some unnamed vintage. The version
+ * is right there in resolvedModel ("claude-opus-5[1m]", "claude-haiku-4-5-
+ * 20251001"), so we read it from that and fall back to the description, which
+ * the CLI writes as "Haiku 4.5 - Fastest for quick answers".
+ *
+ * @param {{resolvedModel?:string, value?:string, description?:string}} m
+ * @returns {string} "5" | "4.5" | "" when nothing parses
+ */
+export function modelVersion(m) {
+  const id = String((m && (m.resolvedModel || m.value)) || "")
+    .replace(/\[[^\]]*\]/g, "")       // "[1m]" context variants
+    .replace(/-\d{8}$/, "")           // dated snapshot suffix
+    .replace(/^claude-/, "");
+  const nums = id.split("-").slice(1).filter((p) => /^\d+$/.test(p));
+  if (nums.length) return nums.join(".");
+  // "Haiku 4.5 - Fastest ..." / "Opus 5 with 1M context - ..."
+  const d = /(?:^|\s)(\d+(?:\.\d+)*)(?=\s|$)/.exec(String((m && m.description) || ""));
+  return d ? d[1] : "";
+}
+
+/**
+ * Dropdown label for a model: the CLI's displayName with the version worked in.
+ * "Opus (1M context)" + claude-opus-5 -> "Opus 5 (1M context)". A displayName
+ * that already carries digits (a future CLI may add them) is left alone.
+ * @param {object} m
+ * @returns {string}
+ */
+export function modelLabel(m) {
+  const name = String((m && (m.displayName || m.value)) || "").trim();
+  const ver = modelVersion(m);
+  if (!name) return "";
+  // Already versioned? (a future CLI may say it itself). Test for the version
+  // as its own token — "Opus (1M context)" has a digit but not the version.
+  if (!ver || new RegExp("\\b" + ver.replace(/\./g, "\\.") + "\\b").test(name)) return name;
+  // Put it right after the family word so any parenthetical stays trailing.
+  const head = /^([A-Za-z]+)(\b[\s\S]*)$/.exec(name);
+  return head ? head[1] + " " + ver + head[2] : name + " " + ver;
+}
+
+/** Stamp `displayName` with the version for every model in a CLI answer. */
+export function decorateModels(models) {
+  return (models || []).map((m) => ({ ...m, displayName: modelLabel(m) }));
+}
+
 const MODELS_TTL_MS = 10 * 60 * 1000;
 let modelsCache = null; // { at:number, models:Array }
 
@@ -178,7 +226,7 @@ export function listClaudeModels({ refresh = false } = {}) {
         if (Array.isArray(models) && models.length) {
           // "default" is the CLI's own default pick — the same "whatever is
           // configured elsewhere" idea we just removed from the dropdown.
-          const usable = models.filter((m) => m && m.value && m.value !== "default");
+          const usable = decorateModels(models.filter((m) => m && m.value && m.value !== "default"));
           modelsCache = { at: Date.now(), models: usable };
           done({ models: usable, source: "cli" });
           return;

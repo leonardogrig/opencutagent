@@ -5,6 +5,7 @@ import { markDecisions, applyReview, summarize, computeExcessRanges } from "../r
 import { createRpcDispatcher } from "../rpc/index.js";
 import { fmtDur, fmtElapsed } from "../tools/util.js";
 import { augmentPath, commonBinDirs, ffmpegBin, ffmpegMissingMessage, mergePath } from "../paths.js";
+import { decorateModels, modelLabel, modelVersion } from "../ai.js";
 
 let failures = 0;
 function check(label, cond, got) {
@@ -288,6 +289,35 @@ check("fmtDur: garbage and negatives never print NaN",
 check("fmtElapsed: wall clock stays in words, drops a bare zero",
   fmtElapsed(45) === "45s" && fmtElapsed(192) === "3m 12s" && fmtElapsed(300) === "5m" && fmtElapsed(3900) === "1h 05m",
   [fmtElapsed(45), fmtElapsed(192), fmtElapsed(300), fmtElapsed(3900)]);
+
+/* ---- model labels: the CLI's displayName is version-less, ours isn't ---- */
+{
+  const cli = [
+    { value: "opus[1m]", resolvedModel: "claude-opus-5[1m]", displayName: "Opus (1M context)",
+      description: "Opus 5 with 1M context - Best for everyday, complex tasks" },
+    { value: "claude-fable-5[1m]", resolvedModel: "claude-fable-5", displayName: "Fable",
+      description: "Fable 5 - Most capable for your hardest tasks" },
+    { value: "sonnet", resolvedModel: "claude-sonnet-5", displayName: "Sonnet" },
+    { value: "haiku", resolvedModel: "claude-haiku-4-5-20251001", displayName: "Haiku",
+      description: "Haiku 4.5 - Fastest for quick answers" },
+  ];
+  const labels = decorateModels(cli).map((m) => m.displayName);
+  check("modelLabel: version lands before a trailing parenthetical",
+    labels[0] === "Opus 5 (1M context)", labels[0]);
+  check("modelLabel: plain names get the version appended",
+    labels[1] === "Fable 5" && labels[2] === "Sonnet 5", labels.slice(1, 3));
+  check("modelVersion: dated snapshot keeps the dotted version, not the date",
+    labels[3] === "Haiku 4.5", labels[3]);
+  check("decorateModels: leaves every other field alone",
+    decorateModels(cli)[0].value === "opus[1m]" && decorateModels(cli)[3].description === cli[3].description);
+  check("modelLabel: a displayName that already has digits is untouched",
+    modelLabel({ displayName: "Opus 6", resolvedModel: "claude-opus-6" }) === "Opus 6");
+  check("modelVersion: falls back to the description when the id has no number",
+    modelVersion({ value: "opus", description: "Opus 5 - most capable" }) === "5",
+    modelVersion({ value: "opus", description: "Opus 5 - most capable" }));
+  check("modelLabel: unknown version leaves the name as-is (offline fallback)",
+    modelLabel({ value: "opus", displayName: "Opus" }) === "Opus");
+}
 
 /* ---- binary lookup: the panel starts us with the bare GUI PATH ---- */
 {
