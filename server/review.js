@@ -82,7 +82,7 @@ export function classifyFragments(segments, opts = {}) {
 
 /**
  * Transcribe the timeline into reviewable, indexed segments (all "keep" by
- * default) and store them on ctx.review. Shared by panel "Load segments" and
+ * default) and store them on ctx.review. Shared by panel "Transcribe" and
  * the ppro_get_retake_segments tool.
  */
 export async function buildReview(ctx, opts = {}, onProgress = () => {}) {
@@ -255,7 +255,7 @@ export function dedupeStackedSegments(segments) {
 
 export function requireReview(ctx) {
   if (!ctx.review || !ctx.review.segments || !ctx.review.segments.length) {
-    throw new Error("No segments loaded yet. Run ppro_get_retake_segments (or click “Load segments” in the panel) first.");
+    throw new Error("No segments loaded yet. Run ppro_get_retake_segments (or click “Transcribe” in the panel) first.");
   }
   return ctx.review;
 }

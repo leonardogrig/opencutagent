@@ -394,7 +394,7 @@ export async function transcribeSourceRanges(mediaPath, ranges, opts = {}) {
   // cacheOnly = the panel's silent auto-load: it must NEVER bill. Anything not
   // fully covered by cache aborts here with a typed error the caller can eat.
   if (cacheOnly) {
-    const err = new TranscribeError("The cached transcript doesn't cover the current timeline. Click Load segments to transcribe the new parts.");
+    const err = new TranscribeError("The cached transcript doesn't cover the current timeline. Click Transcribe to read the new parts.");
     err.code = "cache_incomplete";
     throw err;
   }

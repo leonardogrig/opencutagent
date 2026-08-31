@@ -27,12 +27,50 @@ class CancelledError extends Error {
   }
 }
 
-/** Pick the clips the silence tab operates on (video clips with media, 100% speed). */
-function selectClips(timeline, clipId) {
+/**
+ * The tracks a scan can read, in timeline order (V1..Vn then A1..An), each with
+ * how many clips on it carry source media. Feeds the panel's track picker so a
+ * user can scan the track their voice actually lives on (music beds, stacked
+ * punch-ins and placed animation renders otherwise muddy or skip the scan).
+ */
+export function listMediaTracks(timeline) {
+  const byTrack = new Map();
+  for (const c of timeline.clips || []) {
+    let t = byTrack.get(c.track);
+    if (!t) {
+      t = { track: c.track, trackType: c.trackType, trackIndex: c.trackIndex, clips: 0, withMedia: 0 };
+      byTrack.set(c.track, t);
+    }
+    t.clips++;
+    if (c.hasMedia) t.withMedia++;
+  }
+  return [...byTrack.values()]
+    .filter((t) => t.withMedia > 0)
+    .sort((a, b) => (a.trackType === b.trackType ? a.trackIndex - b.trackIndex : a.trackType === "video" ? -1 : 1));
+}
+
+/**
+ * Pick the clips the silence tab operates on (clips with media, 100% speed).
+ * `track` ("V1", "A2", …) scans exactly that track; without it we default to
+ * the video tracks (their linked audio is in the same source file), falling
+ * back to whatever carries media.
+ */
+export function selectClips(timeline, clipId, track) {
   if (clipId && clipId !== "all") {
     const c = timeline.clips.find((x) => x.id === clipId);
     if (!c) throw new ToolError(`No clip "${clipId}". Call ppro_get_timeline_state for valid ids.`);
     return [c];
+  }
+  if (track && track !== "auto") {
+    const want = String(track).toUpperCase();
+    const clips = timeline.clips.filter((c) => c.hasMedia && c.track === want);
+    if (clips.length === 0) {
+      const have = listMediaTracks(timeline).map((t) => t.track);
+      throw new ToolError(
+        `No clips with source media on track ${want}.` + (have.length ? ` Tracks with media: ${have.join(", ")}.` : "")
+      );
+    }
+    return clips;
   }
   let clips = timeline.clips.filter((c) => c.hasMedia && c.trackType === "video");
   if (clips.length === 0) clips = timeline.clips.filter((c) => c.hasMedia);
@@ -48,8 +86,9 @@ export async function buildLevels(ctx, opts = {}, onProgress = () => {}) {
   onProgress("Reading the timeline…");
   const timeline = await getTimeline(ctx);
   const seq = timeline.sequence;
-  const targets = selectClips(timeline, opts.clipId);
+  const targets = selectClips(timeline, opts.clipId, opts.track);
   if (targets.length === 0) throw new ToolError("No clips with source media on the timeline.");
+  const tracks = listMediaTracks(timeline);
 
   const clips = [];
   const skipped = [];
@@ -102,6 +141,8 @@ export async function buildLevels(ctx, opts = {}, onProgress = () => {}) {
     stats,
     settings: { ...DEFAULT_SETTINGS, thresholdDb: stats.suggestedThresholdDb },
     skipped,
+    track: opts.track && opts.track !== "auto" ? String(opts.track).toUpperCase() : null,
+    tracks,
   };
   return ctx.silence;
 }
@@ -118,6 +159,8 @@ export function levelsForPanel(silence) {
     defaults: DEFAULT_SETTINGS,
     presets: PRESETS,
     skipped: silence.skipped && silence.skipped.length ? silence.skipped : undefined,
+    track: silence.track || null,
+    tracks: silence.tracks || [],
   };
 }
 

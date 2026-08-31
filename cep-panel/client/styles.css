@@ -458,6 +458,9 @@ input[type="checkbox"].switch:focus-visible { box-shadow: 0 0 0 3px var(--focus)
 .viewctl { display: flex; align-items: center; gap: var(--sp-1); flex: none; }
 .viewctl button { min-height: 24px; padding: 0 var(--sp-2); font-size: var(--fs-md); line-height: 1; }
 .viewctl .follow { font-size: var(--fs-sm); white-space: nowrap; margin-right: var(--sp-1); }
+/* Compact "<label> <select>" pair for a toolbar row (the silence scan-track picker). */
+.selctl { display: flex; align-items: center; gap: var(--sp-1); flex: none; font-size: var(--fs-sm); color: var(--text-secondary); white-space: nowrap; margin-right: var(--sp-1); }
+.selctl select { min-width: 74px; min-height: 24px; padding: 0 var(--sp-1); font-size: var(--fs-sm); }
 .sil-scroll { flex: 1; overflow-y: auto; padding: var(--sp-1) var(--sp-3) var(--sp-3); }
 
 .viz-wrap { position: relative; background: var(--viz-bg); border: 1px solid var(--border-default); border-radius: var(--r-md); overflow: hidden; }

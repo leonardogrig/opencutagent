@@ -96,7 +96,7 @@
         <div class="pop-sec" id="elevenSec">
           <div class="pop-title">ElevenLabs</div>
           <div class="pop-row"><span>API key</span><span id="keyState" class="pop-val">…</span></div>
-          <button id="keyBtn" class="sm" data-tip="The ElevenLabs API key that pays for transcription (Load segments / Analyze w/ Claude). Silence removal never needs it.">
+          <button id="keyBtn" class="sm" data-tip="The ElevenLabs API key that pays for transcription (Transcribe / Analyze w/ Claude). Silence removal never needs it.">
             <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
             <span class="lbl">Add API key</span>
           </button>
@@ -152,6 +152,12 @@
             </button>
             <span id="silStatus" class="summary"></span>
             <span class="viewctl">
+              <label class="selctl" id="silTrackWrap" data-tip="Which track's audio is measured. Pick the one your voice is on when the timeline stacks music, b-roll or silent graphics. Cuts still ripple every track, so picture and sound stay in sync.">
+                <span>Scan</span>
+                <select id="silTrack">
+                  <option value="">Auto</option>
+                </select>
+              </label>
               <label class="chk follow" data-tip="Keeps the view scrolled to Premiere's playhead during playback. Click the waveform to move the playhead there; drag to pan the view.">
                 <input type="checkbox" id="silFollow" class="switch" role="switch" checked /> Follow
               </label>
@@ -347,7 +353,7 @@
         <div class="toolbar">
           <button id="loadBtn" class="primary" disabled data-tip="Transcribes the timeline and splits it into segments you can keep or cut. Transcripts are cached per source file, so reloads are free.">
             <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg>
-            <span class="lbl">Load segments</span>
+            <span class="lbl">Transcribe</span>
           </button>
           <button id="aiBtn" disabled data-tip="Claude reads the transcript and marks duplicate takes, false starts and filler as Cut. Nothing is deleted until you press Apply All.">
             <svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5z"/><path d="M19 14l.6 1.9L21.5 16.5l-1.9.6L19 19l-.6-1.9L16.5 16.5l1.9-.6z"/></svg>
@@ -369,7 +375,7 @@
           <div class="empty-state">
             <div class="es-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88M14.47 14.48 20 20M8.12 8.12 12 12"/></svg></div>
             <div class="es-title">No segments loaded</div>
-            <div class="es-sub">Open a sequence in Premiere, then <b>Load segments</b> to transcribe the timeline.</div>
+            <div class="es-sub">Open a sequence in Premiere, then <b>Transcribe</b> to read the timeline.</div>
           </div>
         </div>
 
@@ -467,7 +473,7 @@
               <div class="empty-state">
                 <div class="es-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5z"/><rect x="3" y="16" width="18" height="5" rx="1.5"/></svg></div>
                 <div class="es-title">No segments loaded</div>
-                <div class="es-sub">Load segments in the <b>Retakes</b> tab first, then pick a run of neighboring segments here to animate over. Or start a <b>raw animation</b> below: it needs no transcript and lands at the playhead.</div>
+                <div class="es-sub">Run <b>Transcribe</b> in the <b>Retakes</b> tab first, then pick a run of neighboring segments here to animate over. Or start a <b>raw animation</b> below: it needs no transcript and lands at the playhead.</div>
               </div>
             </div>
             <div class="footer anim-foot">

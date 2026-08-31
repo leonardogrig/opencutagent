@@ -117,8 +117,14 @@ primary buttons keep crisp dark labels (white-on-Ember is only ~3.1:1).
   mode while the link is healthy (`applyConn()` in main.js: the local helper
   server is an implementation detail there); problem states like "Waiting for
   server…" / "Not in Premiere" always show, in both modes.
+- **Scan track picker** — `.selctl` (a compact `<span>label</span><select>` pair)
+  in the Remove Silences `.viewctl`: `#silTrack` chooses WHICH track's audio is
+  measured ("Auto" = every video track with media; otherwise `V1`/`A2`, with the
+  count of media clips on it). Persisted at `editagent.silence.track`; changing it
+  rescans immediately when levels are already loaded. It scopes the MEASUREMENT
+  only: cuts still ripple every track, so picture and sound stay in sync.
 - **Layout compaction** — Remove Silences has ONE toolbar row (`.sil-bar`:
-  Scan/Rescan + truncating status + `.viewctl` Follow/zoom); the legend keeps
+  Scan/Rescan + truncating status + `.viewctl` track picker/Follow/zoom); the legend keeps
   swatches + a "drag to pan · scroll to zoom" hint. The threshold block is a
   `.thr-head` row (label + live value + `a.calc-ai`) over the slider. Retakes puts
   status + Follow on one `.statusrow`. Waveform canvas: click = seek, drag = pan,

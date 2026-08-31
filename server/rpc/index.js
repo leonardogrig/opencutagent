@@ -7,13 +7,13 @@
 import { readdir, stat, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { buildReview, markDecisions, applyReview, reconcile, reinsertTarget, requireReview, planEditMarkers, EDIT_MARKER_SENTINEL, buildTranscriptCues, formatSrt } from "../review.js";
-import { buildLevels, levelsForPanel, applySilenceRanges } from "../silences.js";
+import { buildLevels, levelsForPanel, applySilenceRanges, listMediaTracks } from "../silences.js";
 import { restoreUndo, hasUndo } from "../undo.js";
 import { liveEnv, setEnvKey } from "../config.js";
 import { readCloudConfig, writeCloudConfig, cloudUrl, cloudLinkStart, cloudLinkPoll, cloudSignOut, cloudMe } from "../cloud.js";
 import { askClaude, THRESHOLD_SCHEMA, thresholdSystem, thresholdPrompt, analyzeRetakes, listClaudeModels } from "../ai.js";
 import { readUsage, recordUsage } from "../usage.js";
-import { fmtDur } from "../tools/util.js";
+import { fmtDur, getTimeline } from "../tools/util.js";
 import { animHandlers } from "../animation/index.js";
 
 // Model/effort come from the panel dropdowns; fall back to .env, then sane defaults.
@@ -48,10 +48,28 @@ async function cancel(_params, _helpers, ctx) {
 /** Analyze timeline loudness for the Remove Silences tab (ffmpeg, no transcription). */
 async function analyzeLevels(params, helpers, ctx) {
   return cancellable(ctx, async () => {
-    const silence = await buildLevels(ctx, { clipId: params.clip_id, refresh: !!params.refresh }, helpers.progress);
+    const silence = await buildLevels(
+      ctx,
+      { clipId: params.clip_id, track: params.track, refresh: !!params.refresh },
+      helpers.progress
+    );
     helpers.progress(`Analyzed ${silence.clips.length} clip(s).`);
     return levelsForPanel(silence);
   });
+}
+
+/**
+ * The sequence's tracks that carry source media, for the panel's scan-track
+ * picker. One cheap host read: the picker must be populated BEFORE the first
+ * scan, so it can't wait for a levels payload.
+ */
+async function timelineTracks(params, helpers, ctx) {
+  const timeline = await getTimeline(ctx);
+  return {
+    sequence: timeline.sequence.name,
+    tracks: listMediaTracks(timeline),
+    current: (ctx.silence && ctx.silence.track) || null,
+  };
 }
 
 /** Apply the panel's computed silence ranges (remove / keep-spaces / mute). */
@@ -328,7 +346,7 @@ async function aiThreshold(params, helpers, ctx) {
     let silence = ctx.silence;
     if (!silence || !silence.clips || !silence.clips.length) {
       helpers.progress("Scanning audio levels…");
-      silence = await buildLevels(ctx, { clipId: params.clip_id }, helpers.progress);
+      silence = await buildLevels(ctx, { clipId: params.clip_id, track: params.track }, helpers.progress);
     }
     if (token.aborted) throw new Error("Cancelled");
     helpers.progress("Claude is choosing a threshold…");
@@ -663,7 +681,7 @@ async function cloudAccount() {
   return cloudMe();
 }
 
-const HANDLERS = { ping, cancel, loadSegments, autoLoadSegments, applyDecisions, softApply, clearMarkers, exportTranscript, timelineMap, reinsertSegment, analyzeLevels, applySilences, aiThreshold, aiRetakes, undoLastApply, undoStatus, cacheInfo, clearCache, usageLog, aiModels, keyStatus, setApiKey, envList, setEnv, cloudStatus, cloudLink, cloudPoll, cloudSignOut: cloudSignOutRpc, cloudSetMode, cloudAccount, ...animHandlers };
+const HANDLERS = { ping, cancel, loadSegments, autoLoadSegments, applyDecisions, softApply, clearMarkers, exportTranscript, timelineMap, reinsertSegment, analyzeLevels, timelineTracks, applySilences, aiThreshold, aiRetakes, undoLastApply, undoStatus, cacheInfo, clearCache, usageLog, aiModels, keyStatus, setApiKey, envList, setEnv, cloudStatus, cloudLink, cloudPoll, cloudSignOut: cloudSignOutRpc, cloudSetMode, cloudAccount, ...animHandlers };
 
 export function createRpcDispatcher(ctx) {
   return async (method, params, helpers) => {

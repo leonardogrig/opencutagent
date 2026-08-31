@@ -12,6 +12,7 @@ export default {
     type: "object",
     properties: {
       clip_id: { type: "string", description: 'Clip id, or "all" (default) for every video clip with media.' },
+      track: { type: "string", description: 'Measure loudness from this timeline track only, e.g. "V1" or "A2" (default: every video track with media). Cuts still ripple every track.' },
       dry_run: { type: "boolean", description: "If true, return the cut list WITHOUT editing. Default true — always preview first." },
       threshold_db: { type: "number", description: "Noise Threshold in dB (negative). Default: auto-estimated from the audio." },
       min_silence_ms: { type: "integer", description: "Remove Silences Longer Than (ms). Default 120." },
@@ -25,7 +26,7 @@ export default {
   },
   async handler(args, ctx) {
     const dryRun = args.dry_run !== false; // default true; preview before cutting
-    const silence = await buildLevels(ctx, { clipId: args.clip_id, refresh: !!args.refresh });
+    const silence = await buildLevels(ctx, { clipId: args.clip_id, track: args.track, refresh: !!args.refresh });
 
     const settings = {
       ...(args.threshold_db != null ? { thresholdDb: args.threshold_db } : { thresholdDb: silence.stats.suggestedThresholdDb }),

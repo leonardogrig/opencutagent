@@ -249,6 +249,8 @@
       AI.refreshCloud();
       // A previously-transcribed project loads by itself, from cache, for free.
       Retake.autoLoad();
+      // The sequence may have changed while we were offline — re-read its tracks.
+      Silence.refreshTracks();
       if (activeTab === "retake") Retake.onShow(); // resume playhead sync after a reconnect
       else if (activeTab === "silence") Silence.onShow();
       else if (activeTab === "anim") Anim.onShow();
@@ -1034,6 +1036,11 @@
       snapNext: false,        // force the next reading to recenter (set on scan/show), even if unmoved
       pollTimer: null, pollInFlight: false,
       pendingConfig: null,
+      // scan track: "" = auto (every video track with media), else a track like "A1".
+      // Only chooses which audio is MEASURED — cuts still ripple every track.
+      track: loadTrack(),
+      tracks: [],             // [{track, trackType, trackIndex, withMedia}] from the server
+      tracksFetched: false,
       customPresets: loadCustomPresets(),
     };
 
@@ -1042,7 +1049,7 @@
     function cache() {
       ["silScanBtn", "silStopBtn", "silStopBtn2", "silUndoBtn", "silStatus", "silCanvas", "vizEmpty", "silOverview", "ovEnd",
        "thrValue", "thrSlider", "calcAi", "presetRow", "minSilence", "keepTalk",
-       "marginBefore", "marginAfter", "silSummary", "cutBtn", "zoomIn", "zoomOut", "zoomFit", "silFollow"
+       "marginBefore", "marginAfter", "silSummary", "cutBtn", "zoomIn", "zoomOut", "zoomFit", "silFollow", "silTrack"
       ].forEach(function (id) { el[id] = $(id); });
     }
 
@@ -1106,15 +1113,17 @@
       s.scanning = true; updateButtons();
       setLoading(el.silScanBtn, true, "Scanning…");
       setStatus("Reading audio levels…");
-      callServer("analyzeLevels", { refresh: !!refresh }, function (m) { setStatus(m); }).then(
+      callServer("analyzeLevels", { refresh: !!refresh, track: s.track || undefined }, function (m) { setStatus(m); }).then(
         function (res) {
           s.data = res;
           s.loaded = true; s.scanning = false;
           ingest(res);
           setLoading(el.silScanBtn, false, "Rescan");
           el.vizEmpty.style.display = "none";
+          // The scan just read the timeline — refresh the picker from what it saw.
+          if (res.tracks && res.tracks.length) { s.tracks = res.tracks; s.tracksFetched = true; renderTracks(); }
           var sk = res.skipped && res.skipped.length ? " (" + res.skipped.length + " clip(s) skipped)" : "";
-          setStatus(res.clips.length + " clip(s) analyzed" + sk);
+          setStatus(res.clips.length + " clip(s) analyzed" + (s.track ? " on " + s.track : "") + sk);
           if (s.pendingConfig) { var pc = s.pendingConfig; s.pendingConfig = null; applyPushedConfig(pc); }
           recompute(); updateButtons();
         },
@@ -1501,7 +1510,11 @@
       if (!connected() || s.scanning || s.applying || s.undoing) return;
       s.aiBusy = true; updateButtons();
       setStatus("Claude is choosing a threshold…");
-      callServer("aiThreshold", AI.params(), function (m) { setStatus(m); }).then(
+      // Carry the scan track: without it a first-scan-from-here would measure a
+      // different set of clips than the tab is showing.
+      var thrParams = AI.params();
+      if (s.track) thrParams.track = s.track;
+      callServer("aiThreshold", thrParams, function (m) { setStatus(m); }).then(
         function (res) {
           s.aiBusy = false;
           setThreshold(res.thresholdDb, false); recompute();
@@ -1603,6 +1616,36 @@
       setView(c - span / 2, c + span / 2);
     }
     function fit() { setView(s.full0, s.full1); }
+
+    /* ----- scan track picker ----- */
+    function loadTrack() { try { return window.localStorage.getItem("editagent.silence.track") || ""; } catch (e) { return ""; } }
+    function persistTrack() { try { window.localStorage.setItem("editagent.silence.track", s.track || ""); } catch (e) {} }
+
+    // Rebuild the <select> from the sequence's tracks. A persisted pick that this
+    // sequence doesn't have (switched projects) is kept as an option rather than
+    // silently dropped to Auto, so the label never lies about what will be scanned.
+    function renderTracks() {
+      if (!el.silTrack) return;
+      var html = '<option value="">Auto</option>', i, t, found = false;
+      for (i = 0; i < s.tracks.length; i++) {
+        t = s.tracks[i];
+        if (t.track === s.track) found = true;
+        html += '<option value="' + esc(t.track) + '">' + esc(t.track) + " (" + t.withMedia + ")</option>";
+      }
+      if (s.track && !found) html += '<option value="' + esc(s.track) + '">' + esc(s.track) + "</option>";
+      el.silTrack.innerHTML = html;
+      el.silTrack.value = s.track || "";
+    }
+
+    // One cheap host read so the picker is populated BEFORE the first scan.
+    function fetchTracks(force) {
+      if (!connected() || (s.tracksFetched && !force)) return;
+      s.tracksFetched = true;
+      callServer("timelineTracks", {}).then(
+        function (res) { s.tracks = (res && res.tracks) || []; renderTracks(); },
+        function () { s.tracksFetched = false; } // no sequence open yet; retry on the next show
+      );
+    }
 
     /* ----- playhead follow (mirrors the Retakes tab) ----- */
     function loadFollow() { try { s.follow = window.localStorage.getItem("editagent.silence.follow") !== "0"; } catch (e) { s.follow = true; } }
@@ -1832,18 +1875,30 @@
           if (s.follow) snapToPlayhead();
         });
       }
+      renderTracks();
+      if (el.silTrack) {
+        el.silTrack.addEventListener("change", function () {
+          s.track = el.silTrack.value || "";
+          persistTrack();
+          // Already scanned? The picture on screen is now the wrong track, so
+          // re-measure straight away instead of leaving a stale waveform behind.
+          if (s.loaded && connected() && !s.scanning && !s.applying && !s.undoing && !s.aiBusy) scan(false);
+          else setStatus(s.track ? "Scanning " + s.track + " on the next scan." : "Scanning every video track with media.");
+        });
+      }
       wireCanvas(); wireOverview();
       window.addEventListener("resize", function () { if (activeTab === "silence") draw(); });
     }
 
     function onShow() {
       s.snapNext = true; // re-center on the playhead when the tab comes into view
+      fetchTracks(false); // populate the track picker before any scan
       draw(); // scan is explicit (the Scan Audio button) — no auto-scan on open
       startPoll(); // playhead follow (self-gates until audio is scanned)
     }
     function onHide() { stopPoll(); }
 
-    return { wire: wire, onShow: onShow, onHide: onHide, updateButtons: updateButtons, applyPushedConfig: applyPushedConfig, markUndoable: markUndoable, clearUndoable: clearUndoable };
+    return { wire: wire, onShow: onShow, onHide: onHide, updateButtons: updateButtons, applyPushedConfig: applyPushedConfig, markUndoable: markUndoable, clearUndoable: clearUndoable, refreshTracks: function () { fetchTracks(true); } };
   })();
 
   /* ================================================================
@@ -1862,6 +1917,9 @@
       pendingSig: null, sigStable: 0, loadedSig: null,
     };
     var POLL_MS = 300, MAP_LAZY_MS = 4000;
+    // The load button's two labels. Constants because the label is also READ back
+    // to decide whether the button has flipped to its loaded state.
+    var LOAD_LABEL = "Transcribe", RELOAD_LABEL = "Reload";
     var expanded = {};
     var groupExpanded = {}; // collapsed runs of consecutive "Removed" segments (key = first seg index)
     var GROUP_COLORS = ["#5a8cff", "#d9a441", "#c77dff", "#4fd1c5", "#f06595", "#9ccc65", "#ff8a65", "#7e9cff"];
@@ -1887,7 +1945,7 @@
       var fr = res.fragments || {};
       var extra = (fr.autoCut ? " · " + fr.autoCut + " pop(s) auto-cut" : "") + (fr.flagged ? " · " + fr.flagged + " flagged" : "");
       setStatus(state.segments.length + " segments loaded" + (note ? " " + note : "") + extra + (res.skipped && res.skipped.length ? " (" + res.skipped.length + " clip(s) skipped)" : ""));
-      setLabel(el.loadBtn, "Reload");
+      setLabel(el.loadBtn, RELOAD_LABEL);
       render();
       refreshMap(true); // reconcile positions for playhead-sync + re-insert state
       Anim.onSegments(); // the Animation tab's picker shares this list
@@ -1907,14 +1965,14 @@
       el.segments.innerHTML = skeletonRows();
       callServer("loadSegments", { transcribe_model: AI.sttModel(), fresh: fresh === true }, function (m) { setStatus(m); }).then(
         function (res) {
-          setLoading(el.loadBtn, false, "Reload"); setBusy(false);
+          setLoading(el.loadBtn, false, RELOAD_LABEL); setBusy(false);
           adoptReview(res, "");
         },
         function (err) {
           var cancelled = /cancel/i.test(err.message);
           var keyIssue = AI.handleKeyError(err); // missing/rejected key → the key modal explains it
           setStatus(cancelled ? "Stopped." : keyIssue ? "Add your ElevenLabs API key, then Load again." : err.message, !cancelled && !keyIssue);
-          setLoading(el.loadBtn, false, state.loaded ? "Reload" : "Load segments"); setBusy(false); render();
+          setLoading(el.loadBtn, false, state.loaded ? RELOAD_LABEL : LOAD_LABEL); setBusy(false); render();
         }
       );
     }
@@ -1951,7 +2009,7 @@
     function applyReviewUpdate(segments) {
       if (!Array.isArray(segments)) return;
       state.segments = segments; state.loaded = true;
-      if (lblText(el.loadBtn) === "Load segments") setLabel(el.loadBtn, "Reload");
+      if (lblText(el.loadBtn) === LOAD_LABEL) setLabel(el.loadBtn, RELOAD_LABEL);
       var cuts = segments.filter(function (s) { return s.decision === "cut" && !s.protected; }).length;
       setStatus("Claude marked " + cuts + " segment(s) to cut. Review below, then Apply All.");
       render();
@@ -2029,7 +2087,7 @@
     function exportTranscript() {
       if (state.busy) return;
       if (!connected()) { setStatus("Not connected.", true); return; }
-      if (!state.loaded) { toast("Load segments first."); return; }
+      if (!state.loaded) { toast("Transcribe the timeline first."); return; }
       var hasSpeech = state.segments.some(function (s) {
         return s.decision !== "cut" && s.fragment !== "empty" && s.wordCount > 0 && s.text && String(s.text).trim();
       });
@@ -2317,7 +2375,7 @@
     function isEmptyCut(s) { return s.fragment === "empty" && s.decision === "cut" && !s.protected && !isAbsent(s); }
     function render() {
       if (!state.segments.length) {
-        el.segments.innerHTML = '<div class="empty-state"><div class="es-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88M14.47 14.48 20 20M8.12 8.12 12 12"/></svg></div><div class="es-title">No segments loaded</div><div class="es-sub">Open a sequence in Premiere, then <b>Load segments</b> to transcribe the timeline.</div></div>';
+        el.segments.innerHTML = '<div class="empty-state"><div class="es-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88M14.47 14.48 20 20M8.12 8.12 12 12"/></svg></div><div class="es-title">No segments loaded</div><div class="es-sub">Open a sequence in Premiere, then <b>Transcribe</b> to read the timeline.</div></div>';
         updateButtons(); return;
       }
       var html = "", i = 0, j, run;
@@ -2662,7 +2720,7 @@
     function renderSegs() {
       var loaded = Retake.isLoaded();
       if (!loaded) {
-        el.animSegs.innerHTML = '<div class="empty-state"><div class="es-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5z"/><rect x="3" y="16" width="18" height="5" rx="1.5"/></svg></div><div class="es-title">No segments loaded</div><div class="es-sub">Load segments in the <b>Retakes</b> tab first, then pick a run of neighboring segments here to animate over. Or start a <b>raw animation</b> below: it needs no transcript and lands at the playhead.</div></div>';
+        el.animSegs.innerHTML = '<div class="empty-state"><div class="es-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5z"/><rect x="3" y="16" width="18" height="5" rx="1.5"/></svg></div><div class="es-title">No segments loaded</div><div class="es-sub">Run <b>Transcribe</b> in the <b>Retakes</b> tab first, then pick a run of neighboring segments here to animate over. Or start a <b>raw animation</b> below: it needs no transcript and lands at the playhead.</div></div>';
         return;
       }
       var segs = eligible();
