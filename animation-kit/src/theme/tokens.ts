@@ -42,7 +42,7 @@ export const tokens = {
   },
 
   font: {
-    // Excalifont = self-hosted (public/fonts). Inter loaded via @remotion/google-fonts.
+    // Both faces are inlined as data: URIs (see theme/fonts.ts) so a render never fetches a font.
     hand: "'Excalifont', 'Comic Sans MS', 'Segoe Print', cursive",
     ui: "'Inter', system-ui, -apple-system, sans-serif",
     mono: "ui-monospace, Menlo, Consolas, monospace",

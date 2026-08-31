@@ -487,6 +487,16 @@
             <div id="animJobInfo" class="anim-jobinfo"></div>
             <div id="animChatLog" class="anim-chat"></div>
             <div class="anim-inputbox">
+              <!-- Shown when the agent finished a version that never reached the
+                   timeline (a render that died on its own). Retrying costs no
+                   agent turn: the scene is already built. -->
+              <div id="animPending" class="anim-pending" hidden>
+                <span id="animPendingText"></span>
+                <button id="animRenderBtn" data-tip="Renders the version the agent already built and places it on the timeline. No new message, no extra thinking time.">
+                  <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+                  <span class="lbl">Render again</span>
+                </button>
+              </div>
               <div id="animAttach" class="anim-attach"></div>
               <div class="anim-input-row">
                 <button id="animImgBtn" class="icon-btn" data-tip="Attach reference images (screenshots, sketches, frames). You can also drag and drop images onto the chat, or paste one with Cmd+V / Ctrl+V.">

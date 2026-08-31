@@ -150,16 +150,27 @@ primary buttons keep crisp dark labels (white-on-Ember is only ~3.1:1).
   `.system` centered notices). The audience is a VIDEO EDITOR: tool calls and
   intermediate agent narration are NEVER rendered — they collapse into ONE
   self-replacing **activity bubble** pinned last in the log
-  (`.anim-msg.assistant.activity`: dashed bubble + `.anim-activity-dot` pulse)
-  with friendly verbs ("Reading the brief…", "Sketching the animation…",
-  "Rendering v2: 47%") that replace in place and never stack; real messages
+  (`.anim-msg.assistant.activity`: dashed bubble + `.anim-activity-dot` pulse,
+  plus an `.anim-activity-el` elapsed counter that starts ticking after 20s so a
+  15-minute turn never reads as a freeze) with friendly verbs ("Reading the
+  brief…", "Sketching the animation… 16m", "Rendering v2: 47%") that replace in
+  place and never stack; real messages
   insert above it and it disappears when the turn ends. Only the turn's FINAL
   reply becomes a normal bubble — and on a turn that RENDERS, even that is
   suppressed (persisted `hidden`): the placed notice is the reply, now carrying
   the turn's cost: `.anim-msg.system.placed` ("Animation v1 placed on V2 at
   10:50 (18.4k tokens, 3m 12s). Click to view.", success-green, underline on
   hover) and the job-header `.badge.seekable` carry `data-seek` → clicking moves
-  Premiere's playhead to the animation's start. Composer `.anim-inputbox`:
+  Premiere's playhead to the animation's start. A render that FAILED persists a
+  `.anim-msg.system.err` notice (the server writes it to the job's chat, so it
+  survives a reload) and the composer grows an `.anim-pending` bar (dashed Ember
+  outline) reading "Version N is built but not on the timeline." with a **Render
+  again** button: the scene is already built and paid for, so a flaky render
+  costs no new agent turn. A turn that ends any other bad way (agent error,
+  timeout, Stop) also persists its own notice, and a turn killed without
+  unwinding at all (server restart) is caught by `job.interrupted` and closed
+  out with a red "that message never got a reply" line. Nothing may end a turn
+  silently: a toast dies with the next reload. Composer `.anim-inputbox`:
   attach pills (`.anim-pill` + ×; hovering a pill pops an `.imgpeek` image
   preview above it — tipbox conventions, max 220px), textarea (Enter sends,
   Shift+Enter newline),

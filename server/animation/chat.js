@@ -15,9 +15,28 @@ import { cloudEnabled, cloudChatEnv } from "../cloud.js";
 import { liveEnv } from "../config.js";
 import { log } from "../log.js";
 
+/**
+ * There is deliberately NO wall-clock budget by default. A turn on a long 4K
+ * scene legitimately runs 15-20 minutes (it rewrites the composition,
+ * typechecks, and renders stills to check itself), and a cap only ever kills
+ * work that was going fine - which reads to the user as the panel freezing.
+ * Opt in with EDITAGENT_ANIM_TIMEOUT_MS if you want a hard ceiling.
+ * @returns {number} milliseconds, or 0 for no cap
+ */
 function chatTimeoutMs() {
   const v = parseInt(liveEnv("EDITAGENT_ANIM_TIMEOUT_MS") || "", 10);
-  return Number.isFinite(v) && v > 0 ? v : 1200000; // 20 min: a turn may typecheck + render stills
+  return Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+/**
+ * What we DO enforce: progress. The CLI streams an event on every tool call and
+ * every token, so total silence means the process is wedged, not busy. The
+ * clock restarts on any output, so a long-running step never trips it - only a
+ * genuine hang does, and then the user gets told instead of waiting forever.
+ */
+function chatStallMs() {
+  const v = parseInt(liveEnv("EDITAGENT_ANIM_STALL_MS") || "", 10);
+  return Number.isFinite(v) && v > 0 ? v : 900000; // 15 min of complete silence
 }
 
 /** One-line description of a tool call for the panel's activity chips. */
@@ -126,10 +145,17 @@ export function runChatTurn({ kitDirPath, job, prompt, styleSkill = "", model, e
     if (token) { token.child = child; if (token.children) token.children.add(child); }
 
     let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try { child.kill("SIGKILL"); } catch { /* already gone */ }
-    }, chatTimeoutMs());
+    let stalled = false;
+    const kill = () => { try { child.kill("SIGKILL"); } catch { /* already gone */ } };
+    const capMs = chatTimeoutMs();
+    const timer = capMs ? setTimeout(() => { timedOut = true; kill(); }, capMs) : null;
+    // Restarted by every byte the agent produces (see markProgress below).
+    let stallTimer = setTimeout(() => { stalled = true; kill(); }, chatStallMs());
+    const markProgress = () => {
+      clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => { stalled = true; kill(); }, chatStallMs());
+    };
+    const clearTimers = () => { if (timer) clearTimeout(timer); clearTimeout(stallTimer); };
 
     let buf = "";
     let stderrBuf = "";
@@ -168,6 +194,7 @@ export function runChatTurn({ kitDirPath, job, prompt, styleSkill = "", model, e
     };
 
     child.stdout.on("data", (d) => {
+      markProgress();
       buf += d.toString();
       let nl;
       while ((nl = buf.indexOf("\n")) >= 0) {
@@ -175,21 +202,22 @@ export function runChatTurn({ kitDirPath, job, prompt, styleSkill = "", model, e
         buf = buf.slice(nl + 1);
       }
     });
-    child.stderr.on("data", (d) => { stderrBuf += d.toString(); });
+    child.stderr.on("data", (d) => { markProgress(); stderrBuf += d.toString(); });
     child.stdin.on("error", () => { /* swallow EPIPE if the process never started */ });
 
     child.on("error", (e) => {
-      clearTimeout(timer);
+      clearTimers();
       if (token) { if (token.child === child) token.child = null; if (token.children) token.children.delete(child); }
       reject(new Error(friendlyError(e.message, e.code)));
     });
 
     child.on("close", (code) => {
-      clearTimeout(timer);
+      clearTimers();
       if (buf) handleLine(buf);
       if (token) { if (token.child === child) token.child = null; if (token.children) token.children.delete(child); }
       if (token && token.aborted) { reject(new Error("Cancelled")); return; }
-      if (timedOut) { reject(new Error(`The animation agent didn't finish within ${Math.round(chatTimeoutMs() / 60000)} minutes. Try again (the session resumes where it left off), or raise EDITAGENT_ANIM_TIMEOUT_MS.`)); return; }
+      if (stalled) { reject(new Error(`The animation agent went quiet for ${Math.round(chatStallMs() / 60000)} minutes and looked stuck, so it was stopped. Everything it had already written is saved: send "continue" and it picks up where it left off.`)); return; }
+      if (timedOut) { reject(new Error(`The animation agent was still working after ${Math.round(capMs / 60000)} minutes and hit the time limit you set, so it was stopped. Everything it had already written is saved: send "continue" and it picks up where it left off. Raise or clear EDITAGENT_ANIM_TIMEOUT_MS in the gear settings under Advanced to allow longer turns.`)); return; }
       if (!result) {
         log("animation chat: no result event. stderr:", stderrBuf.slice(0, 500));
         reject(new Error(friendlyError(stderrBuf.trim() || `claude exited with code ${code} and produced no result.`)));

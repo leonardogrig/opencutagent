@@ -1,4 +1,4 @@
-import "./theme/fonts"; // side-effect: load Excalifont + Inter
+import "./theme/fonts"; // side-effect: load the inlined Excalifont + Inter
 import React from "react";
 import { Composition } from "remotion";
 import { jobs } from "./jobs/manifest";

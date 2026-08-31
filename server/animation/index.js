@@ -9,7 +9,7 @@
 // doesn't touch Premiere until the final placement host calls, which serialize
 // on the bridge like everything else.
 import { basename } from "node:path";
-import { ensureKit, listStyles, readStyleSkill } from "./kit.js";
+import { ensureKit, kitDir, listStyles, readStyleSkill } from "./kit.js";
 import {
   createJob, createRawJob, discardJob, loadJobsFrom, readChat, appendChat, saveJob, snapshotScene,
   readRenderSignal, saveRefImage, animTrackIndex, fmtTokens, fmtElapsed, sequenceFrameSize,
@@ -57,7 +57,29 @@ function getJob(ctx, jobId) {
   return job;
 }
 
-function jobSummary(job) {
+/**
+ * True when the job's chat ends on the user's message: the turn never produced
+ * a reply, a placement, or even an error. Only a process that DIED without
+ * unwinding leaves this (a killed or restarted server, a machine that slept) -
+ * every in-process failure now writes its own notice. Derived, not bookkept, so
+ * it is correct across restarts.
+ */
+export function turnInterrupted(chat, busy) {
+  if (busy) return false;
+  const last = chat && chat.length ? chat[chat.length - 1] : null;
+  return !!(last && last.role === "user");
+}
+
+/** The version written to render.json that has not been rendered yet (0 = none). */
+function pendingRenderVersion(job) {
+  try {
+    const signal = readRenderSignal(job, kitDir());
+    return signal && signal.version > (job.lastRenderedVersion || 0) ? signal.version : 0;
+  } catch { return 0; }
+}
+
+function jobSummary(job, ctx = null) {
+  const chat = readChat(job);
   return {
     id: job.id,
     title: job.title || job.id,
@@ -76,10 +98,15 @@ function jobSummary(job) {
     segmentIndexes: job.segmentIndexes,
     sequence: job.sequence,
     lastRenderedVersion: job.lastRenderedVersion || 0,
+    // A version the agent signalled but that never reached the timeline (the
+    // render failed, or the panel was closed mid-render): the panel turns this
+    // into a "Render again" button so a flaky render costs no new agent turn.
+    pendingRender: pendingRenderVersion(job),
     renders: job.renders || [],
     placed: job.placed || null,
     outDir: job.outDir, // so the panel's folder button can reveal it in Finder/Explorer
-    chat: readChat(job),
+    chat,
+    interrupted: turnInterrupted(chat, !!(ctx && ctx.animOp)),
   };
 }
 
@@ -184,6 +211,44 @@ async function renderAndPlace(ctx, job, kitPath, signal, token, stats = null) {
   return { renderInfo, placeInfo, text };
 }
 
+/**
+ * renderAndPlace, but a failure is PERSISTED to the chat before it propagates.
+ * The RPC rejection only produces a toast, which is gone the moment the panel
+ * reloads - and a render that dies leaves nothing on disk and nothing in the
+ * chat, so the user comes back to a session that looks like it simply stopped.
+ */
+async function renderPlaceOrReport(ctx, job, kitPath, signal, token, stats = null) {
+  try {
+    return await renderAndPlace(ctx, job, kitPath, signal, token, stats);
+  } catch (e) {
+    if (token && token.aborted) throw e;
+    const text = `Version ${signal.version} could not be rendered. ${e.message} Nothing changed on the timeline. Press "Render again" to retry without spending another turn.`;
+    appendChat(job, { role: "system", kind: "error", text });
+    pushEvent(ctx, job.id, { kind: "renderFailed", version: signal.version, text });
+    e.reported = true; // animChat must not post a second notice for the same failure
+    throw e;
+  }
+}
+
+/**
+ * Every way a turn can end badly, written into the job's chat so it survives a
+ * panel reload, a reconnect, or the user looking away. A turn that dies with
+ * nothing persisted is the worst failure mode this tab has: the panel simply
+ * goes quiet and the session looks frozen.
+ */
+function reportTurnFailure(ctx, job, err, token) {
+  if (err && err.reported) return;                       // renderPlaceOrReport already said it
+  const cancelled = (token && token.aborted) || /cancel/i.test(String(err && err.message));
+  const text = cancelled
+    ? "Stopped. Whatever the agent had already written is saved; send a message to carry on."
+    : `The agent stopped before finishing this turn. ${err && err.message ? err.message : "Unknown error."}`;
+  try {
+    appendChat(job, { role: "system", kind: cancelled ? "note" : "error", text });
+    pushEvent(ctx, job.id, { kind: cancelled ? "turnStopped" : "turnFailed", text });
+  } catch { /* the notice is best-effort; never mask the original failure */ }
+  if (err) err.reported = true;
+}
+
 /* ============================ RPC handlers ============================ */
 
 /** The style choices for the tab's dropdown. */
@@ -210,7 +275,7 @@ async function animState(_params, _helpers, ctx) {
   return {
     projectDir: dir,
     busy: !!ctx.animOp,
-    jobs: [...a.jobs.values()].filter((j) => j.projectDir === dir).sort((x, y) => (x.createdAt || 0) - (y.createdAt || 0)).map(jobSummary),
+    jobs: [...a.jobs.values()].filter((j) => j.projectDir === dir).sort((x, y) => (x.createdAt || 0) - (y.createdAt || 0)).map((j) => jobSummary(j, ctx)),
   };
 }
 
@@ -240,7 +305,7 @@ async function animCreate(params, helpers, ctx) {
       ? await createRawJob(ctx, { ...common, durationSec: params.durationSec }, kitPath)
       : await createJob(ctx, { ...common, indexes: params.segments }, kitPath);
     a.jobs.set(job.id, job);
-    return { job: jobSummary(job), message: `Animation ${job.id} created (${fmtDur(job.durationInFrames / job.fps)}). Tell the agent what to build.` };
+    return { job: jobSummary(job, ctx), message: `Animation ${job.id} created (${fmtDur(job.durationInFrames / job.fps)}). Tell the agent what to build.` };
   });
 }
 
@@ -261,74 +326,110 @@ async function animChat(params, _helpers, ctx) {
 
     const refs = images.map((im) => saveRefImage(job, kitPath, im.name, im.data));
     appendChat(job, { role: "user", text, images: refs.map((r) => basename(r)) });
-
-    const firstTurn = !job.sessionId;
-    let prompt = text;
-    if (refs.length) {
-      prompt += `\n\n[The user attached ${refs.length} reference image(s): ${refs.join(", ")}. View them with the Read tool.]`;
-    }
-    if (firstTurn) {
-      prompt = `[First message for job ${job.id}. Read src/jobs/${job.id}/brief.md before answering.]\n\n` + prompt;
+    try {
+      return await runTurn();
+    } catch (e) {
+      reportTurnFailure(ctx, job, e, token);
+      throw e;
     }
 
-    const startedAt = Date.now();
-    let streamed = "";
-    const tools = [];
-    const turn = await runChatTurn({
-      kitDirPath: kitPath,
-      job,
-      prompt,
-      styleSkill: readStyleSkill(job.style),
-      model: params.model,
-      effort: params.effort,
-      token,
-      onEvent: (ev) => {
-        if (ev.kind === "delta") streamed += ev.text;
-        else if (ev.kind === "tool") tools.push({ name: ev.name, detail: ev.detail });
-        pushEvent(ctx, job.id, ev);
-      },
-    });
+    async function runTurn() {
+      const firstTurn = !job.sessionId;
+      let prompt = text;
+      if (refs.length) {
+        prompt += `\n\n[The user attached ${refs.length} reference image(s): ${refs.join(", ")}. View them with the Read tool.]`;
+      }
+      if (firstTurn) {
+        prompt = `[First message for job ${job.id}. Read src/jobs/${job.id}/brief.md before answering.]\n\n` + prompt;
+      }
 
-    job.sessionId = turn.sessionId;
-    const assistantText = (turn.text && turn.text.trim()) || streamed;
-    // When this turn triggered a render, the placed notice IS the reply: the
-    // agent's final prose is persisted hidden and never shown as a bubble.
+      const startedAt = Date.now();
+      let streamed = "";
+      const tools = [];
+      const turn = await runChatTurn({
+        kitDirPath: kitPath,
+        job,
+        prompt,
+        styleSkill: readStyleSkill(job.style),
+        model: params.model,
+        effort: params.effort,
+        token,
+        onEvent: (ev) => {
+          if (ev.kind === "delta") streamed += ev.text;
+          else if (ev.kind === "tool") tools.push({ name: ev.name, detail: ev.detail });
+          pushEvent(ctx, job.id, ev);
+        },
+      });
+
+      job.sessionId = turn.sessionId;
+      const assistantText = (turn.text && turn.text.trim()) || streamed;
+      // When this turn triggered a render, the placed notice IS the reply: the
+      // agent's final prose is persisted hidden and never shown as a bubble.
+      const signal = readRenderSignal(job, kitPath);
+      const willRender = !!(signal && signal.version > (job.lastRenderedVersion || 0));
+      appendChat(job, { role: "assistant", text: assistantText, tools, ...(willRender ? { hidden: true } : {}) });
+      snapshotScene(job, kitPath);
+      saveJob(job);
+      const tokens = ((turn.usage && turn.usage.input_tokens) || 0) + ((turn.usage && turn.usage.output_tokens) || 0);
+      recordUsage({
+        type: "claude",
+        purpose: "Animation chat",
+        model: params.model || "latest",
+        effort: params.effort || null,
+        calls: 1,
+        durationMs: Date.now() - startedAt,
+        inputTokens: (turn.usage && turn.usage.input_tokens) || 0,
+        outputTokens: (turn.usage && turn.usage.output_tokens) || 0,
+        costUsd: 0, // subscription
+      });
+      pushEvent(ctx, job.id, { kind: "assistantDone", text: willRender ? "" : assistantText, tools });
+
+      // The agent signals "ready" by bumping render.json — render + place now.
+      let placedMsg = null;
+      if (willRender) {
+        if (token.aborted) throw new Error("Cancelled");
+        const done = await renderPlaceOrReport(ctx, job, kitPath, signal, token, { tokens, startedAt });
+        placedMsg = done.text;
+      }
+
+      pushEvent(ctx, job.id, { kind: "turnDone" });
+      return {
+        ok: turn.ok,
+        text: willRender ? "" : assistantText,
+        tools,
+        placed: placedMsg,
+        sessionId: job.sessionId,
+        message: placedMsg || (turn.ok ? "Reply received." : assistantText),
+      };
+    }
+  });
+}
+
+/**
+ * Render + place the version the agent already signalled, without another chat
+ * turn. This is the retry for a render that died on its own (a recycled browser
+ * tab, a crashed renderer): the scene is finished and paid for, only the render
+ * failed.
+ */
+async function animRender(params, _helpers, ctx) {
+  return cancellableAnim(ctx, async (token) => {
+    const job = getJob(ctx, params.jobId);
+    const kitPath = await ensureKit({ onProgress: (m) => pushEvent(ctx, job.id, { kind: "status", text: m }), token });
+    if (token.aborted) throw new Error("Cancelled");
     const signal = readRenderSignal(job, kitPath);
-    const willRender = !!(signal && signal.version > (job.lastRenderedVersion || 0));
-    appendChat(job, { role: "assistant", text: assistantText, tools, ...(willRender ? { hidden: true } : {}) });
-    snapshotScene(job, kitPath);
-    saveJob(job);
-    const tokens = ((turn.usage && turn.usage.input_tokens) || 0) + ((turn.usage && turn.usage.output_tokens) || 0);
-    recordUsage({
-      type: "claude",
-      purpose: "Animation chat",
-      model: params.model || "latest",
-      effort: params.effort || null,
-      calls: 1,
-      durationMs: Date.now() - startedAt,
-      inputTokens: (turn.usage && turn.usage.input_tokens) || 0,
-      outputTokens: (turn.usage && turn.usage.output_tokens) || 0,
-      costUsd: 0, // subscription
-    });
-    pushEvent(ctx, job.id, { kind: "assistantDone", text: willRender ? "" : assistantText, tools });
-
-    // The agent signals "ready" by bumping render.json — render + place now.
-    let placedMsg = null;
-    if (willRender) {
-      if (token.aborted) throw new Error("Cancelled");
-      const done = await renderAndPlace(ctx, job, kitPath, signal, token, { tokens, startedAt });
-      placedMsg = done.text;
+    if (!signal) throw new Error("There is nothing to render yet. Ask the agent to build the animation first.");
+    if (signal.version <= (job.lastRenderedVersion || 0)) {
+      throw new Error("This version is already on the timeline. Ask for a change to get a new one.");
     }
-
+    let done;
+    try {
+      done = await renderPlaceOrReport(ctx, job, kitPath, signal, token);
+    } catch (e) {
+      reportTurnFailure(ctx, job, e, token);
+      throw e;
+    }
     pushEvent(ctx, job.id, { kind: "turnDone" });
-    return {
-      ok: turn.ok,
-      text: willRender ? "" : assistantText,
-      tools,
-      placed: placedMsg,
-      sessionId: job.sessionId,
-      message: placedMsg || (turn.ok ? "Reply received." : assistantText),
-    };
+    return { placed: done.text, message: done.text };
   });
 }
 
@@ -346,7 +447,7 @@ async function animSetLength(params, _helpers, ctx) {
   const text = `Length set to ${fmtDur(dur)}.` +
     (job.lastRenderedVersion ? " Ask for a new version to re-render at the new length." : "");
   appendChat(job, { role: "system", kind: "length", text });
-  return { job: jobSummary(job), message: text };
+  return { job: jobSummary(job, ctx), message: text };
 }
 
 /** Stop the in-flight chat turn / render (kills the child processes). */
@@ -374,4 +475,4 @@ async function animDiscard(params, _helpers, ctx) {
   return { ok: true, message: `Deleted ${job.id} from the list.` + (params.deleteOutputs ? "" : " Any clip it placed stays on the timeline (its rendered file is kept).") };
 }
 
-export const animHandlers = { animStyles, animState, animCreate, animChat, animCancel, animDiscard, animSetLength };
+export const animHandlers = { animStyles, animState, animCreate, animChat, animRender, animCancel, animDiscard, animSetLength };

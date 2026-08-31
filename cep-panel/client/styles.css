@@ -789,6 +789,7 @@ button.reinsert:hover:not(:disabled) { background: var(--accent-hover); border-c
 .anim-msg.system.placed { color: var(--success-text); cursor: pointer; }
 .anim-msg.system.placed:hover span { text-decoration: underline; }
 .badge.seekable { cursor: pointer; }
+.anim-activity-el { color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 .anim-msg-imgs { margin-top: var(--sp-1); color: var(--text-tertiary); font-size: var(--fs-xs); }
 
 /* Agent activity bubble: sits last in the chat, text replaced in place
@@ -807,6 +808,16 @@ button.reinsert:hover:not(:disabled) { background: var(--accent-hover); border-c
 /* Composer */
 .anim-inputbox { flex: none; border-top: 1px solid var(--border-subtle); background: var(--surface-1); padding: var(--sp-2) var(--sp-3) var(--sp-3); }
 .anim-attach { display: none; flex-wrap: wrap; gap: var(--sp-1); padding: var(--sp-1) 0; }
+/* "Version 2 is built but not on the timeline." + Render again. Sits above the
+   composer whenever a finished version never got rendered/placed. */
+.anim-pending {
+  display: flex; align-items: center; gap: var(--sp-2);
+  margin-bottom: var(--sp-2); padding: var(--sp-2);
+  background: var(--surface-2); border: 1px dashed var(--accent); border-radius: var(--r-md);
+  font-size: var(--fs-sm); color: var(--text-secondary);
+}
+.anim-pending span { flex: 1; min-width: 0; }
+.anim-pending button { flex: none; }
 .anim-pill {
   display: inline-flex; align-items: center; gap: var(--sp-1);
   padding: 2px var(--sp-2);

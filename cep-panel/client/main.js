@@ -2423,7 +2423,8 @@
        "animSize", "animSizeWrap", "animOrientCtl", "animSizeCustom", "animW", "animH",
        "animSelect", "animStatus", "animJobs", "animSegs", "animRawBtn",
        "animSelSummary", "animCreateBtn", "animChatWrap", "animJobInfo", "animChatLog",
-       "animAttach", "animText", "animSendBtn", "animStopBtn", "animImgBtn", "animFile"]
+       "animAttach", "animText", "animSendBtn", "animStopBtn", "animImgBtn", "animFile",
+       "animPending", "animPendingText", "animRenderBtn"]
         .forEach(function (id) { el[id] = $(id); });
     }
     function loadPrefs() {
@@ -2483,22 +2484,45 @@
       var dot = document.createElement("span");
       dot.className = "anim-activity-dot";
       var txt = document.createTextNode("");
+      var el2 = document.createElement("span");
+      el2.className = "anim-activity-el";
       bubble.appendChild(dot);
       bubble.appendChild(txt);
+      bubble.appendChild(el2);
       wrap.appendChild(bubble);
       el.animChatLog.appendChild(wrap);
       state.activityEl = wrap;
       state.activityText = txt;
+      state.activityElapsed = el2;
+      tickElapsed();
     }
     function removeActivityBubble() {
       if (state.activityEl && state.activityEl.parentNode) state.activityEl.parentNode.removeChild(state.activityEl);
       state.activityEl = null;
       state.activityText = null;
+      state.activityElapsed = null;
+    }
+    // A turn can legitimately run 15+ minutes. Without a moving number the panel
+    // reads as frozen, which is exactly the complaint this exists to answer.
+    function tickElapsed() {
+      if (!state.activityElapsed) return;
+      var t = state.turnStartedAt ? Math.round((Date.now() - state.turnStartedAt) / 1000) : 0;
+      state.activityElapsed.textContent = t >= 20 ? " · " + fmtElapsed(t) : "";
+    }
+    function startElapsed() {
+      state.turnStartedAt = Date.now();
+      if (state.elapsedTimer) clearInterval(state.elapsedTimer);
+      state.elapsedTimer = setInterval(tickElapsed, 1000);
+    }
+    function stopElapsed() {
+      if (state.elapsedTimer) { clearInterval(state.elapsedTimer); state.elapsedTimer = null; }
+      state.turnStartedAt = null;
     }
     function setChatStatus(text) {
       if (!text) { removeActivityBubble(); return; }
       ensureActivityBubble();
       state.activityText.nodeValue = text;
+      tickElapsed();
       scrollChat();
     }
     // New messages slot in ABOVE the activity bubble so it always stays last.
@@ -2745,7 +2769,45 @@
       if (m.kind === "placed" && m.targetSeconds != null) {
         return '<div class="anim-msg system placed" data-seek="' + m.targetSeconds + '" data-tip="Click to move the Premiere playhead to where this animation starts."><span>' + esc(m.text) + " Click to view.</span></div>";
       }
+      if (m.kind === "error") return '<div class="anim-msg system err"><span>' + esc(m.text) + "</span></div>";
       return '<div class="anim-msg system"><span>' + esc(m.text) + "</span></div>";
+    }
+    /* A version the agent built that never reached the timeline: offer the
+     * render again on its own, so a renderer that died costs no new turn. */
+    function reflectPending() {
+      if (!el.animPending) return;
+      var job = activeJob();
+      var pending = job && job.pendingRender > 0 && !state.busy;
+      el.animPending.hidden = !pending;
+      if (pending) {
+        el.animPendingText.textContent = "Version " + job.pendingRender + " is built but not on the timeline.";
+      }
+    }
+    function renderAgain() {
+      var job = activeJob();
+      if (!job || !connected() || state.busy) return;
+      state.busy = true; state.turnRendered = true; state.turnNoticeShown = false; updateButtons();
+      startElapsed();
+      setChatStatus("Rendering…", true);
+      callServer("animRender", { jobId: job.id }, function (m) { setChatStatus(m, true); }).then(
+        function () {
+          state.busy = false;
+          stopElapsed();
+          setChatStatus("");
+          refreshState(); // the placed notice arrived as a push; pick up the new state
+          updateButtons();
+        },
+        function (err) {
+          state.busy = false;
+          stopElapsed();
+          setChatStatus("");
+          var cancelled = /cancel/i.test(err.message);
+          if (!state.turnNoticeShown) appendSystemBubble(cancelled ? "Stopped." : err.message, !cancelled);
+          if (!cancelled) toast(err.message, "error");
+          refreshState();
+          updateButtons();
+        }
+      );
     }
     function renderChat() {
       var job = activeJob();
@@ -2775,9 +2837,16 @@
           ? "Describe the animation you want. This one is not based on your transcript, so tell the agent everything it should show; attach reference images if it helps."
           : "Tell the agent what to build for this narration. It knows the transcript and the exact duration; attach reference images if it helps.") + "</span></div>";
       }
+      // The chat ends on the user's message and nothing is running: the turn was
+      // killed without unwinding (server restart, machine slept). Say so rather
+      // than leaving a message that looks like it is still being answered.
+      if (job.interrupted && !state.busy) {
+        html += '<div class="anim-msg system err"><span>That message never got a reply: the agent was interrupted (the server or Premiere restarted). Anything it had written is saved, so send it again, or "continue", to pick up.</span></div>';
+      }
       el.animChatLog.innerHTML = html;
-      state.activityEl = null; state.activityText = null; // wiped with the log
+      state.activityEl = null; state.activityText = null; state.activityElapsed = null; // wiped with the log
       if (state.busy) setChatStatus("Working…"); // a rebuild mid-turn keeps the live bubble
+      reflectPending();
       scrollChat();
     }
     function appendUserBubble(text, imgs) {
@@ -2977,7 +3046,8 @@
       if (!connected() || state.busy || !state.activeJobId) return;
       if (!text && !state.pendingImgs.length) return;
       var jobId = state.activeJobId;
-      state.busy = true; state.turnRendered = false; updateButtons();
+      state.busy = true; state.turnRendered = false; state.turnNoticeShown = false; updateButtons();
+      startElapsed();
       appendUserBubble(text, state.pendingImgs);
       var images = state.pendingImgs;
       state.pendingImgs = []; renderAttach();
@@ -2987,6 +3057,7 @@
       callServer("animChat", { jobId: jobId, text: text, images: images, model: p.model, effort: p.effort }, function (m) { setChatStatus(m, true); }).then(
         function (res) {
           state.busy = false;
+          stopElapsed();
           if (res) appendAssistantReply(res.text); // no-op if the assistantDone push already did
           setChatStatus("");
           // A placed notice is already a bubble in this chat (pushed live, and
@@ -2996,9 +3067,12 @@
         },
         function (err) {
           state.busy = false;
+          stopElapsed();
           setChatStatus("");
           var cancelled = /cancel/i.test(err.message);
-          appendSystemBubble(cancelled ? "Stopped." : err.message, !cancelled);
+          // The server persists and pushes its own notice for every failure it
+          // can see; this only covers what it can't (a dropped connection).
+          if (!state.turnNoticeShown) appendSystemBubble(cancelled ? "Stopped." : err.message, !cancelled);
           if (!cancelled) toast(err.message, "error");
           refreshState();
           updateButtons();
@@ -3052,6 +3126,14 @@
       } else if (ev.kind === "assistantDone") {
         appendAssistantReply(ev.text);
         setChatStatus("Finishing up…", true);
+      } else if (ev.kind === "renderFailed" || ev.kind === "turnFailed") {
+        appendSystemBubble(ev.text || "The agent stopped before finishing this turn.", true);
+        state.turnNoticeShown = true;
+        setChatStatus("");
+      } else if (ev.kind === "turnStopped") {
+        appendSystemBubble(ev.text || "Stopped.", false);
+        state.turnNoticeShown = true;
+        setChatStatus("");
       } else if (ev.kind === "turnDone") {
         setChatStatus("");
       }
@@ -3119,6 +3201,7 @@
       el.animSendBtn.style.display = state.busy && state.activeJobId ? "none" : "";
       el.animStopBtn.style.display = state.busy && state.activeJobId ? "" : "none";
       el.animImgBtn.disabled = state.busy;
+      reflectPending();
       el.animStyle.disabled = !!state.activeJobId;
       el.animTrack.disabled = !!state.activeJobId || state.busy;
       el.animSize.disabled = !!state.activeJobId || state.busy;
@@ -3205,6 +3288,7 @@
       el.animCreateBtn.addEventListener("click", function () { create(false); });
       el.animBackBtn.addEventListener("click", closeJob);
       el.animSendBtn.addEventListener("click", send);
+      el.animRenderBtn.addEventListener("click", renderAgain);
       el.animStopBtn.addEventListener("click", stop);
       el.animText.addEventListener("keydown", function (e) {
         if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }

@@ -16,7 +16,7 @@ import { listStyles, readStyleSkill, kitDir as animWorkspaceDir } from "../anima
 import { toolDetail, buildSystemAppend } from "../animation/chat.js";
 import { claudeSpawnEnv } from "../ai.js";
 import { liveEnv } from "../config.js";
-import { parseFfDuration, parseRenderProgress, renderScale } from "../animation/render.js";
+import { parseFfDuration, parseRenderProgress, renderScale, isTransientRenderError, renderConcurrency } from "../animation/render.js";
 
 let failures = 0;
 function check(label, cond, got) {
@@ -328,6 +328,43 @@ check("raw system prompt tells the agent there is no transcript", /STANDALONE/.t
   const vert = renderScale(j, 1080, 1920);
   check("renderScale: aspect mismatch warns instead of distorting", vert.scale === 1 && /different shape/.test(vert.warning), vert);
   check("renderScale: unknown sequence size renders at the job's own size", renderScale(j, null, undefined).scale === 1 && renderScale(j, 0, 0).warning === null, renderScale(j, null, undefined));
+}
+
+/* ---------- interrupted-turn detection ---------- */
+{
+  const { turnInterrupted } = await import("../animation/index.js");
+  const userLast = [{ role: "system" }, { role: "user", text: "make it blue" }];
+  const replied = [...userLast, { role: "assistant", text: "done" }];
+  const errored = [...userLast, { role: "system", kind: "error", text: "died" }];
+  check("interrupted: a user message with no reply is flagged", turnInterrupted(userLast, false) === true);
+  check("interrupted: a reply clears it", turnInterrupted(replied, false) === false);
+  check("interrupted: a persisted error clears it", turnInterrupted(errored, false) === false);
+  check("interrupted: a running turn is never 'interrupted'", turnInterrupted(userLast, true) === false);
+  check("interrupted: an empty chat is fine", turnInterrupted([], false) === false && turnInterrupted(null, false) === false);
+}
+
+/* ---------- concurrency by resolution ---------- */
+{
+  check("concurrency: 1080p uses Remotion's default", renderConcurrency(1920, 1080) === null);
+  check("concurrency: 1440p is capped", renderConcurrency(2560, 1440) === 4);
+  check("concurrency: 4K is capped harder", renderConcurrency(3840, 2160) === 3);
+  check("concurrency: vertical 4K counts pixels, not width", renderConcurrency(2160, 3840) === 3);
+  check("concurrency: unknown size leaves the default", renderConcurrency(null, undefined) === null);
+}
+
+/* ---------- transient render failures (worth a silent retry) ---------- */
+{
+  // The live failure that motivated this: frame 3270 of 5990, a recycled tab
+  // that never finished loading the font.
+  const fontHang = 'remotion render failed (exit 1). A delayRender() "Loading font Excalifont" was called but not cleared after 118000ms.';
+  check("transient: a delayRender timeout retries", isTransientRenderError(fontHang) === true);
+  check("transient: a crashed renderer retries", isTransientRenderError("remotion render failed (exit 1). Error: the renderer crashed") === true);
+  check("transient: a closed puppeteer target retries", isTransientRenderError("Protocol error: Target closed") === true);
+  check("transient: a cancel is NOT retried", isTransientRenderError("Cancelled") === false);
+  check("transient: our own hard stop is NOT retried", isTransientRenderError("remotion render timed out after 30 min.") === false);
+  check("transient: a wedged render (no progress) IS retried", isTransientRenderError("remotion render stopped reporting progress for 10 min and looked stuck, so it was stopped.") === true);
+  check("transient: a real scene error is NOT retried", isTransientRenderError("remotion render failed (exit 2). ReferenceError: foo is not defined") === false);
+  check("transient: empty input is safe", isTransientRenderError(undefined) === false);
 }
 
 /* ---------- render parsing ---------- */

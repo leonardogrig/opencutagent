@@ -16,7 +16,13 @@ import { log } from "../log.js";
 import { ffmpegBin } from "../paths.js";
 import { fmtDur } from "../tools/util.js";
 
-function runProcess(bin, args, { cwd, token, onStdout, onStderr, timeoutMs = 900000, label = bin } = {}) {
+/**
+ * `timeoutMs` is a wall-clock ceiling (0 = none); `stallMs` is the one that
+ * matters for long jobs: it restarts on every byte of output, so a step that
+ * takes an hour but keeps reporting is left alone while a wedged process is
+ * caught and REPORTED instead of hanging forever.
+ */
+function runProcess(bin, args, { cwd, token, onStdout, onStderr, timeoutMs = 900000, stallMs = 0, label = bin } = {}) {
   return new Promise((resolve, reject) => {
     let child;
     try {
@@ -27,15 +33,25 @@ function runProcess(bin, args, { cwd, token, onStdout, onStderr, timeoutMs = 900
     }
     if (token) { token.child = child; if (token.children) token.children.add(child); }
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; try { child.kill("SIGKILL"); } catch { /* gone */ } }, timeoutMs);
+    let stalled = false;
+    const kill = () => { try { child.kill("SIGKILL"); } catch { /* gone */ } };
+    const timer = timeoutMs ? setTimeout(() => { timedOut = true; kill(); }, timeoutMs) : null;
+    let stallTimer = stallMs ? setTimeout(() => { stalled = true; kill(); }, stallMs) : null;
+    const markProgress = () => {
+      if (!stallMs) return;
+      clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => { stalled = true; kill(); }, stallMs);
+    };
+    const clearTimers = () => { if (timer) clearTimeout(timer); if (stallTimer) clearTimeout(stallTimer); };
     let err = "";
-    child.stdout.on("data", (d) => { const s = d.toString(); if (onStdout) onStdout(s); });
-    child.stderr.on("data", (d) => { const s = d.toString(); err += s; if (err.length > 20000) err = err.slice(-20000); if (onStderr) onStderr(s); });
-    child.on("error", (e) => { clearTimeout(timer); reject(new Error(`Could not run ${label}: ${e.message}`)); });
+    child.stdout.on("data", (d) => { markProgress(); const s = d.toString(); if (onStdout) onStdout(s); });
+    child.stderr.on("data", (d) => { markProgress(); const s = d.toString(); err += s; if (err.length > 20000) err = err.slice(-20000); if (onStderr) onStderr(s); });
+    child.on("error", (e) => { clearTimers(); reject(new Error(`Could not run ${label}: ${e.message}`)); });
     child.on("close", (code) => {
-      clearTimeout(timer);
+      clearTimers();
       if (token) { if (token.child === child) token.child = null; if (token.children) token.children.delete(child); }
       if (token && token.aborted) return reject(new Error("Cancelled"));
+      if (stalled) return reject(new Error(`${label} stopped reporting progress for ${Math.round(stallMs / 60000)} min and looked stuck, so it was stopped.`));
       if (timedOut) return reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 60000)} min.`));
       if (code === 0) return resolve({ stderr: err });
       reject(new Error(`${label} failed (exit ${code}). ${err.slice(-600)}`));
@@ -97,9 +113,61 @@ export function renderScale(job, seqW, seqH) {
   return { scale: w / job.width, outWidth: w, warning: null };
 }
 
+/**
+ * No wall-clock ceiling by default: a long 4K composition can legitimately
+ * render for a very long time, and killing it at an arbitrary minute mark only
+ * throws away work. Progress is policed by renderStallMs instead. Opt in with
+ * EDITAGENT_ANIM_RENDER_TIMEOUT_MS.
+ * @returns {number} milliseconds, or 0 for no cap
+ */
 function renderTimeoutMs() {
   const v = parseInt(liveEnv("EDITAGENT_ANIM_RENDER_TIMEOUT_MS") || "", 10);
-  return Number.isFinite(v) && v > 0 ? v : 1800000; // 30 min hard stop for one render
+  return Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+/** Remotion prints a line per frame, so silence this long means it is wedged. */
+function renderStallMs() {
+  const v = parseInt(liveEnv("EDITAGENT_ANIM_RENDER_STALL_MS") || "", 10);
+  return Number.isFinite(v) && v > 0 ? v : 600000; // 10 min without a single frame
+}
+
+/**
+ * Browser tabs, not CPU, are the scarce resource at high resolutions: six
+ * concurrent 4K pages starve the headless renderer until pages stop running JS
+ * altogether, and whatever delayRender() is open at that moment (in practice
+ * the font handle, the only long-lived one) trips the frame timeout. Fewer
+ * pages costs some wall clock and buys a render that finishes. Pure.
+ * @returns {number|null} concurrency to pass, or null for Remotion's default
+ */
+export function renderConcurrency(width, height) {
+  const forced = parseInt(liveEnv("EDITAGENT_ANIM_CONCURRENCY") || "", 10);
+  if (Number.isFinite(forced) && forced > 0) return forced;
+  const pixels = Number(width) * Number(height);
+  if (!Number.isFinite(pixels) || pixels <= 0) return null;
+  if (pixels >= 3840 * 2160) return 3; // 4K and up
+  if (pixels >= 2560 * 1440) return 4; // 1440p
+  return null; // 1080p and below: Remotion's default is fine
+}
+
+function renderAttempts() {
+  const v = parseInt(liveEnv("EDITAGENT_ANIM_RENDER_ATTEMPTS") || "", 10);
+  return Number.isFinite(v) && v > 0 ? Math.min(v, 5) : 2;
+}
+
+/**
+ * A Remotion render can die thousands of frames in for reasons that have
+ * nothing to do with the scene: a recycled browser tab that never finishes a
+ * delayRender(), a headless renderer that crashes under memory pressure. Those
+ * are transient (the same frame range renders fine on the next run), and the
+ * user paid for a multi-minute agent turn to get here, so a bare retry is worth
+ * far more than a clean error. A cancel or a hard timeout is NOT transient.
+ */
+export function isTransientRenderError(message) {
+  const m = String(message || "");
+  if (/Cancelled/i.test(m)) return false;
+  if (/timed out after \d+ min/i.test(m)) return false; // our own opt-in hard stop
+  if (/stopped reporting progress/i.test(m)) return true; // wedged: a fresh run usually gets through
+  return /delayRender|renderer crashed|Target closed|Session closed|Protocol error|browser has disconnected|out of memory|ENOMEM|exit 1\b/i.test(m);
 }
 
 /**
@@ -122,23 +190,35 @@ export async function renderJob({ kitDirPath, job, version, scale = 1, onProgres
   if (transparent) args.push("--codec=prores", "--prores-profile=4444", "--pixel-format=yuva444p10le");
   else args.push("--codec=h264", "--crf=14");
   if (Number.isFinite(scale) && scale > 0 && Math.abs(scale - 1) > 0.001) args.push(`--scale=${scale}`);
+  const concurrency = renderConcurrency(job.width * (scale || 1), job.height * (scale || 1));
+  if (concurrency) args.push(`--concurrency=${concurrency}`);
 
-  onProgress(`Rendering animation v${version}…`);
-  let lastPct = -1;
-  await runProcess(process.execPath, args, {
-    cwd: kitDirPath,
-    token,
-    timeoutMs: renderTimeoutMs(),
-    label: "remotion render",
-    onStdout: (s) => {
+  const attempts = renderAttempts();
+  for (let attempt = 1; ; attempt++) {
+    onProgress(attempt === 1 ? `Rendering animation v${version}…` : `Rendering animation v${version} (attempt ${attempt} of ${attempts})…`);
+    let lastPct = -1;
+    const onChunk = (s) => {
       const pct = parseRenderProgress(s);
       if (pct != null && pct !== lastPct) { lastPct = pct; onProgress(`Rendering animation v${version}: ${pct}%`); }
-    },
-    onStderr: (s) => {
-      const pct = parseRenderProgress(s);
-      if (pct != null && pct !== lastPct) { lastPct = pct; onProgress(`Rendering animation v${version}: ${pct}%`); }
-    },
-  });
+    };
+    try {
+      await runProcess(process.execPath, args, {
+        cwd: kitDirPath,
+        token,
+        timeoutMs: renderTimeoutMs(),
+        stallMs: renderStallMs(),
+        label: "remotion render",
+        onStdout: onChunk,
+        onStderr: onChunk,
+      });
+      break;
+    } catch (e) {
+      if ((token && token.aborted) || attempt >= attempts || !isTransientRenderError(e.message)) throw e;
+      log(`animation render attempt ${attempt}/${attempts} failed, retrying: ${String(e.message).slice(-300)}`);
+      onProgress("The renderer stumbled. Starting that render over…");
+      rmSync(tmpPath, { force: true });
+    }
+  }
   if (!existsSync(tmpPath)) throw new Error("Remotion reported success but produced no file.");
 
   // Premiere-safe finishing pass.
