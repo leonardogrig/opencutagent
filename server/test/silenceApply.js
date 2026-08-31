@@ -156,12 +156,13 @@ check("explicit clip_id still wins over track", sel.length === 1 && sel[0].id ==
 
 let threw = null;
 try { selectClips(trackTl, null, "V9"); } catch (e) { threw = e.message; }
-check("empty track throws and names the tracks that have media", !!threw && /V9/.test(threw) && /V1, V2, A1, A2/.test(threw), threw);
+check("empty track throws and names the audio tracks that have media", !!threw && /V9/.test(threw) && /A1, A2/.test(threw), threw);
 
-// V2 has 2 clips but only 1 with media; a track with NO media never appears.
-const tracks = listMediaTracks({ clips: [...trackTl.clips, tlClip("V3.0", "V3", "video", 2, false)] });
-check("track list is video-then-audio, in track order", tracks.map((t) => t.track).join(",") === "V1,V2,A1,A2", tracks.map((t) => t.track));
-check("track list counts clips with media", tracks[1].withMedia === 1 && tracks[1].clips === 2, tracks[1]);
+// The picker lists AUDIO tracks only (this is a loudness scan; Auto covers the
+// video-derived default), and a track with NO media never appears.
+const tracks = listMediaTracks({ clips: [...trackTl.clips, tlClip("A3.0", "A3", "audio", 2, false), tlClip("A3.1", "A3", "audio", 2)] });
+check("track list is audio-only, in track order", tracks.map((t) => t.track).join(",") === "A1,A2,A3", tracks.map((t) => t.track));
+check("track list counts clips with media", tracks[2].withMedia === 1 && tracks[2].clips === 2, tracks[2]);
 
 console.log(failures === 0 ? "\nAll silence-apply checks passed." : `\n${failures} check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);

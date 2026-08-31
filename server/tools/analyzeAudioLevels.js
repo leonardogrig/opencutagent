@@ -11,7 +11,7 @@ export default {
     type: "object",
     properties: {
       clip_id: { type: "string", description: 'Clip id (e.g. "V1.0") or "all" (default — every video clip with media).' },
-      track: { type: "string", description: 'Scan only this timeline track, e.g. "V1" or "A2". Default: every video track with media.' },
+      track: { type: "string", description: 'Scan only this timeline track, usually an audio track like "A1". Default: every video track with media.' },
       refresh: { type: "boolean", description: "Re-extract levels even if cached (use if the source file changed)." },
       set_threshold_db: {
         type: "number",

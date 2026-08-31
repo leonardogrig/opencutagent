@@ -28,14 +28,16 @@ class CancelledError extends Error {
 }
 
 /**
- * The tracks a scan can read, in timeline order (V1..Vn then A1..An), each with
- * how many clips on it carry source media. Feeds the panel's track picker so a
- * user can scan the track their voice actually lives on (music beds, stacked
- * punch-ins and placed animation renders otherwise muddy or skip the scan).
+ * The AUDIO tracks a scan can read (A1..An, in track order), each with how many
+ * clips on it carry source media. Feeds the panel's track picker so a user can
+ * scan the track their voice actually lives on (music beds, stacked punch-ins
+ * and placed animation renders otherwise muddy or skip the scan). Audio only:
+ * this is a loudness scan, and "Auto" already covers the video-derived default.
  */
 export function listMediaTracks(timeline) {
   const byTrack = new Map();
   for (const c of timeline.clips || []) {
+    if (c.trackType !== "audio") continue;
     let t = byTrack.get(c.track);
     if (!t) {
       t = { track: c.track, trackType: c.trackType, trackIndex: c.trackIndex, clips: 0, withMedia: 0 };
@@ -46,7 +48,7 @@ export function listMediaTracks(timeline) {
   }
   return [...byTrack.values()]
     .filter((t) => t.withMedia > 0)
-    .sort((a, b) => (a.trackType === b.trackType ? a.trackIndex - b.trackIndex : a.trackType === "video" ? -1 : 1));
+    .sort((a, b) => a.trackIndex - b.trackIndex);
 }
 
 /**
@@ -67,7 +69,7 @@ export function selectClips(timeline, clipId, track) {
     if (clips.length === 0) {
       const have = listMediaTracks(timeline).map((t) => t.track);
       throw new ToolError(
-        `No clips with source media on track ${want}.` + (have.length ? ` Tracks with media: ${have.join(", ")}.` : "")
+        `No clips with source media on track ${want}.` + (have.length ? ` Audio tracks with media: ${have.join(", ")}.` : "")
       );
     }
     return clips;

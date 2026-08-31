@@ -119,8 +119,9 @@ primary buttons keep crisp dark labels (white-on-Ember is only ~3.1:1).
   server…" / "Not in Premiere" always show, in both modes.
 - **Scan track picker** — `.selctl` (a compact `<span>label</span><select>` pair)
   in the Remove Silences `.viewctl`: `#silTrack` chooses WHICH track's audio is
-  measured ("Auto" = every video track with media; otherwise `V1`/`A2`, with the
-  count of media clips on it). Persisted at `editagent.silence.track`; changing it
+  measured ("Auto" = every video track with media; otherwise an AUDIO track like
+  `A1`/`A2`, with the count of media clips on it — the list offers audio tracks
+  only, this being a loudness scan). Persisted at `editagent.silence.track`; changing it
   rescans immediately when levels are already loaded. It scopes the MEASUREMENT
   only: cuts still ripple every track, so picture and sound stay in sync.
 - **Layout compaction** — Remove Silences has ONE toolbar row (`.sil-bar`:
