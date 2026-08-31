@@ -2413,6 +2413,7 @@
       vTracks: null,        // the sequence's real video track count (from the playhead poll)
       // output size: "seq" mirrors the sequence; presets/custom pin an explicit size
       size: "seq", orient: "h", customW: "", customH: "",
+      frames: false,        // "Use frames": the agent sees the footage and draws around what's on screen
       activityEl: null, activityText: null, // the in-chat "working" bubble (one at most)
     };
     var POLL_MS = 300;
@@ -2421,6 +2422,7 @@
     function cache() {
       ["animStyle", "animStyleWrap", "animBgCtl", "animTrack", "animTrackWrap", "animFollow", "animBackBtn",
        "animSize", "animSizeWrap", "animOrientCtl", "animSizeCustom", "animW", "animH",
+       "animFrames", "animFramesWrap",
        "animSelect", "animStatus", "animJobs", "animSegs", "animRawBtn",
        "animSelSummary", "animCreateBtn", "animChatWrap", "animJobInfo", "animChatLog",
        "animAttach", "animText", "animSendBtn", "animStopBtn", "animImgBtn", "animFile",
@@ -2437,6 +2439,7 @@
         state.orient = window.localStorage.getItem("editagent.anim.orient") === "v" ? "v" : "h";
         state.customW = window.localStorage.getItem("editagent.anim.w") || "";
         state.customH = window.localStorage.getItem("editagent.anim.h") || "";
+        state.frames = window.localStorage.getItem("editagent.anim.frames") === "1";
       } catch (e) {}
     }
     function persistPrefs() {
@@ -2449,6 +2452,7 @@
         window.localStorage.setItem("editagent.anim.orient", state.orient);
         window.localStorage.setItem("editagent.anim.w", el.animW ? el.animW.value : state.customW);
         window.localStorage.setItem("editagent.anim.h", el.animH ? el.animH.value : state.customH);
+        window.localStorage.setItem("editagent.anim.frames", state.frames ? "1" : "0");
       } catch (e) {}
     }
     function setStatus(text, isErr) { el.animStatus.textContent = text || ""; el.animStatus.className = "statusbar" + (isErr ? " err" : ""); }
@@ -2535,10 +2539,15 @@
     function friendlyTool(ev) {
       var d = String(ev.detail || "").toLowerCase();
       switch (ev.name) {
-        case "Read": return d === "brief.md" ? "Reading the brief and your narration…" : "Reviewing the material…";
+        case "Read":
+          if (d === "brief.md") return "Reading the brief and your narration…";
+          // Footage frames the agent extracted for a frame-aware job.
+          if (/^(t\d|crop-|ov)/.test(d) || d.indexOf("frames-map") >= 0) return "Studying your footage frames…";
+          return "Reviewing the material…";
         case "Write":
         case "Edit": return "Sketching the animation…";
         case "Bash":
+          if (d.indexOf("grab-frames") >= 0) return "Grabbing frames from your footage…";
           if (d.indexOf("still") >= 0 || d.indexOf("preview") >= 0 || d.indexOf("frame") >= 0) return "Rendering a preview frame to check the look…";
           if (d.indexOf("tsc") >= 0 || d.indexOf("typecheck") >= 0 || d.indexOf("check") >= 0) return "Double-checking everything works…";
           return "Working…";
@@ -2702,6 +2711,12 @@
         inputs[i].parentNode.className = "segopt" + (inputs[i].checked ? " on" : "");
       }
     }
+    // "Use frames" implies a transparent overlay (the drawings sit ON the
+    // footage), so while it's on the bg choice is moot and its control hides.
+    function syncFramesCtl() {
+      el.animFrames.checked = state.frames;
+      if (!state.activeJobId) el.animBgCtl.style.display = state.frames ? "none" : "";
+    }
     // The Track select mirrors the sequence's REAL tracks (V1..Vn, playhead-poll
     // fed) plus one new track above them; before the first poll it falls back to
     // a generic V1..V6 so the control is never empty.
@@ -2822,7 +2837,7 @@
       el.animJobInfo.innerHTML =
         '<span class="anim-job-name">' + esc(job.title || job.id) + "</span>" + lenHtml +
         '<span class="anim-job-meta">' + (job.raw ? "" : fmtDur(job.durationSec) + " · ") +
-        esc(job.background === "transparent" ? "no bg" : "solid bg") + " · " + esc(job.style) +
+        esc(job.seeFrames ? "on frames" : job.background === "transparent" ? "no bg" : "solid bg") + " · " + esc(job.style) +
         (job.sizeSource === "custom" ? " · " + job.width + "x" + job.height : "") + "</span>" +
         '<span class="seg-badges">' + jobBadge(job, true) + "</span>" +
         (job.outDir
@@ -2984,6 +2999,7 @@
       el.animSizeWrap.style.display = "none";
       el.animOrientCtl.style.display = "none";
       el.animSizeCustom.style.display = "none";
+      el.animFramesWrap.style.display = "none";
       stopPoll(); // no segment list to highlight in chat mode
       renderChat();
       updateButtons();
@@ -2998,7 +3014,9 @@
       el.animBgCtl.style.display = "";
       el.animTrackWrap.style.display = "";
       el.animSizeWrap.style.display = "";
+      el.animFramesWrap.style.display = "";
       syncSizeCtl(); // orient/custom visibility depends on the chosen size
+      syncFramesCtl(); // bg control visibility depends on the frames toggle
       setChatStatus("");
       renderSegs(); renderJobs(); updateButtons();
       if (activeTab === "anim") startPoll();
@@ -3018,7 +3036,12 @@
       var p = AI.params();
       var params = { style: state.style, background: state.background, track: parseInt(state.track, 10), model: p.model, effort: p.effort };
       if (raw) params.raw = true; // the server's default length; editable in the chat
-      else params.segments = state.selection;
+      else {
+        params.segments = state.selection;
+        // Frame-aware: the agent sees the footage and draws around what's on
+        // screen; only meaningful as a transparent overlay, so bg is forced.
+        if (state.frames) { params.seeFrames = true; params.background = "transparent"; }
+      }
       if (size) { params.width = size.width; params.height = size.height; }
       callServer("animCreate", params, function (m) { setStatus(m); }).then(
         function (res) {
@@ -3211,6 +3234,7 @@
       for (i = 0; i < inputs.length; i++) inputs[i].disabled = !!state.activeJobId || state.busy;
       var oInputs = el.animOrientCtl.querySelectorAll("input");
       for (i = 0; i < oInputs.length; i++) oInputs[i].disabled = !!state.activeJobId || state.busy;
+      el.animFrames.disabled = !!state.activeJobId || state.busy;
       updateSelSummary();
     }
     function onShow() {
@@ -3274,6 +3298,8 @@
       });
       el.animW.addEventListener("change", persistPrefs);
       el.animH.addEventListener("change", persistPrefs);
+      syncFramesCtl();
+      el.animFrames.addEventListener("change", function () { state.frames = el.animFrames.checked; persistPrefs(); syncFramesCtl(); });
       el.animFollow.checked = state.follow;
       el.animFollow.addEventListener("change", function () { state.follow = el.animFollow.checked; persistPrefs(); });
       // The raw length lives in the chat header, which is rebuilt on every

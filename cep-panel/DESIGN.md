@@ -142,7 +142,12 @@ primary buttons keep crisp dark labels (white-on-Ember is only ~3.1:1).
   `.anim-job` rows — meta includes a relative age ("14 min ago") and a hover
   `.anim-job-x` delete with an inline two-step "Sure?" (`.confirm`) — plus a
   `.anim-segrow` segment list with `.anim-check` boxes; a selection must be one
-  contiguous run, `.sel` = accent tint + inset accent bar). Inside a chat the
+  contiguous run, `.sel` = accent tint + inset accent bar). The creation bar
+  ends in a **"Use frames"** `.chk` switch (`#animFramesWrap`, persisted
+  `editagent.anim.frames`): frame-aware overlay mode — the agent sees extracted
+  footage frames and draws around what's on screen. While it's on the bg toggle
+  HIDES (transparent is implied); segment animations only (raw ignores it), and
+  the chat header meta reads "on frames". Inside a chat the
   Style select + bg toggle HIDE (fixed at creation) and the header gains a
   `.anim-folder` icon button that reveals the job's folder in Finder/Explorer.
   and **chat** (`.anim-chatwrap`: `.anim-jobinfo` header, `.anim-chat` scroll of

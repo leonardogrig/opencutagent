@@ -9,7 +9,7 @@
 // doesn't touch Premiere until the final placement host calls, which serialize
 // on the bridge like everything else.
 import { basename } from "node:path";
-import { ensureKit, kitDir, listStyles, readStyleSkill } from "./kit.js";
+import { ensureKit, kitDir, listStyles, readStyleSkill, readFramesSkill } from "./kit.js";
 import {
   createJob, createRawJob, discardJob, loadJobsFrom, readChat, appendChat, saveJob, snapshotScene,
   readRenderSignal, saveRefImage, animTrackIndex, fmtTokens, fmtElapsed, sequenceFrameSize,
@@ -87,6 +87,7 @@ function jobSummary(job, ctx = null) {
     raw: !!job.raw,
     style: job.style,
     background: job.background,
+    seeFrames: !!job.seeFrames,
     trackIndex: job.trackIndex != null ? job.trackIndex : animTrackIndex(),
     fps: job.fps,
     width: job.width,
@@ -303,7 +304,7 @@ async function animCreate(params, helpers, ctx) {
     };
     const job = params.raw
       ? await createRawJob(ctx, { ...common, durationSec: params.durationSec }, kitPath)
-      : await createJob(ctx, { ...common, indexes: params.segments }, kitPath);
+      : await createJob(ctx, { ...common, indexes: params.segments, seeFrames: !!params.seeFrames, onProgress: helpers.progress, token }, kitPath);
     a.jobs.set(job.id, job);
     return { job: jobSummary(job, ctx), message: `Animation ${job.id} created (${fmtDur(job.durationInFrames / job.fps)}). Tell the agent what to build.` };
   });
@@ -351,6 +352,7 @@ async function animChat(params, _helpers, ctx) {
         job,
         prompt,
         styleSkill: readStyleSkill(job.style),
+        framesSkill: job.seeFrames ? readFramesSkill() : "",
         model: params.model,
         effort: params.effort,
         token,

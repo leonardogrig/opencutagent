@@ -54,10 +54,11 @@ export function templateSignature() {
   return h.digest("hex");
 }
 
-// Workspace files never clobbered once they exist: the style skills carry a
-// user-grown Learnings Log the agent appends to — a template update must not
-// erase it. (Genuinely new template guidance still lands via new files.)
-const PRESERVE = [/^styles\/[^/]+\/SKILL\.md$/];
+// Workspace files never clobbered once they exist: the style skills and the
+// frames guide carry a user-grown Learnings Log the agent appends to — a
+// template update must not erase it. (Genuinely new template guidance still
+// lands via new files.)
+const PRESERVE = [/^styles\/[^/]+\/SKILL\.md$/, /^frames\/SKILL\.md$/];
 
 // The generated jobs manifest: the template's empty copy must never overwrite a
 // workspace manifest that registers real jobs (regenerateManifest owns it).
@@ -169,6 +170,20 @@ export function readStyleSkill(styleId) {
   for (const base of [kitDir(), KIT_TEMPLATE_DIR]) {
     try {
       const p = join(base, rel);
+      if (existsSync(p) && statSync(p).isFile()) return readFileSync(p, "utf8");
+    } catch { /* try the next location */ }
+  }
+  return "";
+}
+
+/**
+ * The frame-aware workflow guide injected into "Use frames" jobs, workspace
+ * copy first (it carries the growing Learnings Log), template otherwise.
+ */
+export function readFramesSkill() {
+  for (const base of [kitDir(), KIT_TEMPLATE_DIR]) {
+    try {
+      const p = join(base, "frames", "SKILL.md");
       if (existsSync(p) && statSync(p).isFile()) return readFileSync(p, "utf8");
     } catch { /* try the next location */ }
   }

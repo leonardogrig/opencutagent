@@ -12,7 +12,12 @@ import {
   normalizeSizeOverride, fmtTokens, fmtElapsed, normalizeRawDuration, buildRawBrief, createRawJob,
   sequenceFrameSize, setRawLength,
 } from "../animation/jobs.js";
-import { listStyles, readStyleSkill, kitDir as animWorkspaceDir } from "../animation/kit.js";
+import { listStyles, readStyleSkill, readFramesSkill, kitDir as animWorkspaceDir } from "../animation/kit.js";
+import {
+  parseVideoSize, parseBlackdetect, fitTransform, canvasMapFilter, frameName,
+  mergeFrameSpans, prepareFrameAssets, removeFrameAssets,
+} from "../animation/frames.js";
+import { planExtractions, buildFilter } from "../../animation-kit/scripts/grab-frames.mjs";
 import { toolDetail, buildSystemAppend } from "../animation/chat.js";
 import { claudeSpawnEnv } from "../ai.js";
 import { liveEnv } from "../config.js";
@@ -365,6 +370,76 @@ check("raw system prompt tells the agent there is no transcript", /STANDALONE/.t
   check("transient: a wedged render (no progress) IS retried", isTransientRenderError("remotion render stopped reporting progress for 10 min and looked stuck, so it was stopped.") === true);
   check("transient: a real scene error is NOT retried", isTransientRenderError("remotion render failed (exit 2). ReferenceError: foo is not defined") === false);
   check("transient: empty input is safe", isTransientRenderError(undefined) === false);
+}
+
+/* ---------- frame-aware jobs ("Use frames") ---------- */
+{
+  // ffmpeg -i stderr parsing: the codec tag (0x31637634) must never match.
+  const ffInfo = "  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637634), yuv420p(tv, bt709), 2560x1440 [SAR 1:1 DAR 16:9], 4570 kb/s, 30 fps\n  Stream #0:1[0x2](und): Audio: aac, 48000 Hz, stereo";
+  const size = parseVideoSize(ffInfo);
+  check("frames: video size parses past the codec tag", size && size.width === 2560 && size.height === 1440, size);
+  check("frames: audio-only stderr yields no size", parseVideoSize("  Stream #0:0: Audio: aac, 48000 Hz") === null, null);
+
+  const black = parseBlackdetect("[blackdetect @ 0x1] black_start:0 black_end:2.5 black_duration:2.5\n[blackdetect @ 0x1] black_start:10.2 black_end:11 black_duration:0.8", 5);
+  check("frames: blackdetect parses and shifts by the span's rel start", black.length === 2 && approx(black[0].start, 5) && approx(black[0].end, 7.5) && approx(black[1].start, 15.2), black);
+
+  const fitSame = fitTransform(1920, 1080, 3840, 2160);
+  check("frames: same-aspect fit scales with no letterbox", approx(fitSame.scale, 0.5) && fitSame.ox === 0 && fitSame.oy === 0, fitSame);
+  const fitPillar = fitTransform(1920, 1080, 1440, 1080);
+  check("frames: narrower source pillarboxes centered", approx(fitPillar.scale, 1) && fitPillar.ox === 240 && fitPillar.oy === 0, fitPillar);
+  check("frames: canvas map filter fits then pads", canvasMapFilter(1920, 1080) === "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2", canvasMapFilter(1920, 1080));
+
+  check("frames: names zero-pad and sort chronologically", frameName(3.2) === "t0003.20.png" && frameName(0) === "t0000.00.png" && frameName(9.5) < frameName(10), frameName(3.2));
+  check("frames: a .999 fraction carries into the next second", frameName(59.999) === "t0060.00.png", frameName(59.999));
+
+  const spans = mergeFrameSpans([
+    { relStart: 0, relEnd: 2, mediaPath: "/a.mp4", sourceInSec: 10 },
+    { relStart: 2, relEnd: 5, mediaPath: "/a.mp4", sourceInSec: 12 },      // contiguous in rel AND source -> merges
+    { relStart: 5, relEnd: 7, mediaPath: "/a.mp4", sourceInSec: 40 },      // source jumps (a cut) -> stays separate
+    { relStart: 7, relEnd: 8, mediaPath: "/b.mp4", sourceInSec: 45 },      // different media -> separate
+  ]);
+  check("frames: contiguous spans merge, cuts and media changes don't", spans.length === 3 && approx(spans[0].relEnd, 5) && approx(spans[1].sourceInSec, 40) && spans[2].mediaPath === "/b.mp4", spans);
+
+  // grab-frames planning: rel times map onto source times through the spans.
+  const gmap = { canvas: { width: 1920, height: 1080 }, frameWidth: 1568, spans: [
+    { relStart: 0, relEnd: 2, mediaPath: "/a.mp4", sourceInSec: 10 },
+    { relStart: 3, relEnd: 5, mediaPath: "/a.mp4", sourceInSec: 40 },
+  ] };
+  // t = 0..5: 0,1 in span1; 2 clamps to span1's end; 3,4 in span2; 5 clamps to span2's end.
+  const plan = planExtractions(gmap, 0, 5, 1);
+  check("frames: plan walks the window and maps rel -> source", plan.length === 6 && approx(plan[0].sourceSec, 10) && approx(plan[4].sourceSec, 41) && plan[4].relSec === 4, plan);
+  check("frames: a time in a gap (cut footage) is skipped", planExtractions(gmap, 2.2, 2.8, 1).length === 0, planExtractions(gmap, 2.2, 2.8, 1));
+  const edge = planExtractions(gmap, 2, 2, 1);
+  check("frames: a span-end boundary clamps inside so a frame still decodes", edge.length === 1 && edge[0].sourceSec < 12, edge);
+
+  const full = buildFilter(gmap, {});
+  check("frames: full frames downscale and print a coordinate factor", /scale=1568:-2$/.test(full.vf) && approx(full.factor, 1.224, 0.001) && full.prefix === "", full);
+  const crop = buildFilter(gmap, { crop: { x: 50, y: 60, w: 200, h: 100 } });
+  check("frames: crops are 1:1 canvas pixels", /crop=200:100:50:60$/.test(crop.vf) && crop.factor === 1 && crop.prefix === "crop-x50y60-", crop);
+
+  // Prompt + brief wiring.
+  const fjob = { id: "anim-f", fps: 30, width: 1920, height: 1080, durationInFrames: 300, background: "transparent", style: "excalidraw", seeFrames: true };
+  const fsys = buildSystemAppend(fjob, "S", "FRAMES GUIDE BODY");
+  check("frames: system prompt carries the frames guide", /FRAME-AWARE/.test(fsys) && fsys.includes("<frames-skill>") && fsys.includes("FRAMES GUIDE BODY"), null);
+  const plainSys = buildSystemAppend({ ...fjob, seeFrames: false }, "S", "FRAMES GUIDE BODY");
+  check("frames: a normal job gets no frames guide", !plainSys.includes("<frames-skill>") && !/FRAME-AWARE/.test(plainSys), null);
+  const fbrief = buildBrief(fjob, { selected: [{ index: 0, relStart: 0, relEnd: 10, text: "hi" }], transcriptLines: [] });
+  check("frames: brief points at frames-map.json", fbrief.includes("frames-map.json") && fbrief.includes("Screen frames"), null);
+  const plainBrief = buildBrief({ ...fjob, seeFrames: false }, { selected: [], transcriptLines: [] });
+  check("frames: a normal brief has no frames section", !plainBrief.includes("frames-map.json"), null);
+  check("frames: the shipped frames guide is readable", /grab-frames/.test(readFramesSkill()) && /DebugFrame/.test(readFramesSkill()), null);
+
+  // prepareFrameAssets is best-effort: missing media still writes the map.
+  const fkit = mkdtempSync(join(tmpdir(), "oca-frames-"));
+  mkdirSync(join(fkit, "src", "jobs", "anim-f"), { recursive: true });
+  const prep = await prepareFrameAssets({ job: fjob, spans: [{ relStart: 0, relEnd: 5, mediaPath: join(fkit, "missing.mp4"), sourceInSec: 0 }], kitDirPath: fkit });
+  check("frames: missing media degrades to a warning, not a throw", prep.hasVideo === false && prep.warnings.length >= 1, prep);
+  const mapOnDisk = JSON.parse(readFileSync(join(fkit, "src", "jobs", "anim-f", "frames-map.json"), "utf8"));
+  check("frames: frames-map.json is written even with no usable media", mapOnDisk.jobId === "anim-f" && Array.isArray(mapOnDisk.spans) && mapOnDisk.spans.length === 0 && mapOnDisk.canvas.width === 1920, mapOnDisk);
+  check("frames: overview dir exists for the agent to check", existsSync(join(fkit, "public", "frames", "anim-f", "overview")), null);
+  removeFrameAssets("anim-f", fkit);
+  check("frames: discard cleanup removes the extracted frames", !existsSync(join(fkit, "public", "frames", "anim-f")), null);
+  rmSync(fkit, { recursive: true, force: true });
 }
 
 /* ---------- render parsing ---------- */
