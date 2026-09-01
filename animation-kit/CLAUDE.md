@@ -35,7 +35,7 @@ canvas size, fps, exact duration and background mode are in the system prompt an
   `StickyNote`, `Callout`, `Title`, `Label`, `Badge`, `BulletList`, `DotGrid`.
 - Some styles ship their OWN components/theme under `styles/<style>/src/` (import from
   `../../../styles/<style>/src`). Your job's style guide documents them; when it does, prefer
-  them over the generic blocks, and when the guide says the style is NOT hand-drawn (n8n brand),
+  them over the generic blocks, and when the guide says the style is NOT hand-drawn (n8n brand, n8n interface),
   do not use the sketch primitives at all. Style code is read-only too (except the Learnings Log).
 
 ## Your job folder
@@ -49,7 +49,7 @@ canvas size, fps, exact duration and background mode are in the system prompt an
 
 ## Background mode
 - `solid` — start your tree with `<Canvas>` (dark canvas + dot-grid), or the style's own canvas
-  component when its guide names one (e.g. `<BrandCanvas>` in the n8n brand style). The clip fully
+  component when its guide names one (e.g. `<BrandCanvas>` in the n8n brand style, `<UiFrame>` in the n8n interface style). The clip fully
   covers the footage below it, like cutaway b-roll.
 - `transparent` — start with `<Canvas transparent>` (or the style canvas with `transparent`); the
   render keeps alpha and overlays the user's footage. Leave real transparency where the footage should show; strokes and text float

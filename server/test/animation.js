@@ -177,6 +177,22 @@ check("n8n-brand style is registered (not default, ships src)", styles.some((s) 
   check("n8n-brand theme carries the signature pink + five modes", /#FF91AC/.test(theme) && ["neutralLight", "neutralDark", "maker", "pinkLight", "pinkDark"].every((m) => theme.includes(m + ":")), null);
   check("scaffold points at the n8n-brand package", sceneScaffold({ ...job, style: "n8n-brand" }, { styleHasSrc: true }).includes('"../../../styles/n8n-brand/src"'), null);
 }
+if (existsSync(join(KIT_TEMPLATE_DIR, "styles", "n8n-ui"))) { // private style package, absent in public checkouts
+  check("n8n-ui style is registered (not default, ships src)", styles.some((s) => s.id === "n8n-ui" && !s.default && !s.custom), styles);
+  const skill = readStyleSkill("n8n-ui");
+  check("n8n-ui skill teaches its shipped components + log", /UiFrame/.test(skill) && /WorkflowCanvas/.test(skill) && /NodeCreator/.test(skill) && /NDV/.test(skill) && /Cursor/.test(skill) && /WorkflowSettings/.test(skill) && /Learnings log/i.test(skill), null);
+  check("n8n-ui skill forbids the sketch engine", /NOT hand-drawn/i.test(skill) && /no rough\.js/i.test(skill), null);
+  check("n8n-ui skill demands node-for-node workflow fidelity from screenshots", /node for node/i.test(skill) && /screenshot/i.test(skill), null);
+  check("n8n-ui skill has no em dashes", !/\u2014/.test(skill), null);
+  check("n8n-ui skill teaches editorial pacing, cursor discipline and the emphasis zoom", /Editorial pacing/.test(skill) && /Cursor discipline/.test(skill) && /emphasisAt/.test(skill) && /readTime/.test(skill) && /ArrowNote/.test(skill), null);
+  const uiSrc = join(KIT_TEMPLATE_DIR, "styles", "n8n-ui", "src");
+  check("n8n-ui package ships theme + index + inlined icons + catalogue", ["theme.ts", "index.ts", "iconfiles.ts", "iconData.ts", "nodeCatalog.ts", "Shell.tsx", "WorkflowCanvas.tsx", "WorkflowMenu.tsx", "WorkflowSettings.tsx"].every((f) => existsSync(join(uiSrc, f))), null);
+  const theme = readFileSync(join(uiSrc, "theme.ts"), "utf8");
+  check("n8n-ui theme carries the app's dark palette", /#171717/.test(theme) && /#262626/.test(theme) && /#2b2b2b/.test(theme) && /#ff6900/.test(theme), null);
+  const icons = readFileSync(join(uiSrc, "iconfiles.ts"), "utf8");
+  check("n8n-ui logos are inlined data URIs (no public/ assets)", /"gmail\.svg": "data:image\/svg\+xml;base64,/.test(icons) && !existsSync(join(KIT_TEMPLATE_DIR, "public", "n8n-icons")), null);
+  check("scaffold points at the n8n-ui package", sceneScaffold({ ...job, style: "n8n-ui" }, { styleHasSrc: true }).includes('"../../../styles/n8n-ui/src"'), null);
+}
 check("unknown style skill is empty", readStyleSkill("nope") === "", readStyleSkill("nope"));
 
 /* ---------- workspace-file helpers (temp dirs) ---------- */

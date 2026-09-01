@@ -59,3 +59,14 @@ same id wins over a workspace copy.
   asked). The whole system lives in `src/theme.ts`; components never hardcode a value.
   `examples/Showcase.tsx` exercises every component (four pages, 1920x1080, 360 frames): copy it
   into a job folder to see the style, or use it as the QA scene after changing a component.
+- `n8n-ui/` ("n8n interface") — the REAL n8n app (v2.35.7 dark theme) recreated pixel-exact for
+  tutorials, NOT hand-drawn: sidebar, Overview, workflow editor chrome, canvas nodes/edges with
+  real integration logos and n8n's own node glyphs, node picker, node details view, executions,
+  AI Assistant, data tables, plus a macOS cursor with click rings. Measured from the live app's
+  DOM and resolved design tokens at 125% zoom: the app is laid out in a 1536x864 CSS-px `UiFrame`
+  auto-scaled to the job canvas. Icons (69 logos, 80 node glyphs, 360+ UI glyphs) are inlined
+  as data/SVG in `src/iconfiles.ts` + `src/iconData.ts`; the node catalogue (~125 types) lives in
+  `src/nodeCatalog.ts`. `examples/Showcase.tsx` is a complete tutorial beat (Overview -> build a
+  workflow -> execute). The user attaches a workflow screenshot and the agent rebuilds it node
+  for node. Note: the n8n name, logo and the integration logos belong to their owners; this
+  style exists for the user's n8n channel tutorials.

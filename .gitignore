@@ -15,3 +15,6 @@ server/test/eval/out/
 .DS_Store
 Thumbs.db
 design_samples/
+
+# private style package (not for the public repo)
+animation-kit/styles/n8n-ui/
