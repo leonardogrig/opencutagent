@@ -118,20 +118,23 @@ primary buttons keep crisp dark labels (white-on-Ember is only ~3.1:1).
   server is an implementation detail there); problem states like "Waiting for
   server…" / "Not in Premiere" always show, in both modes.
 - **Scan track picker** — `.selctl` (a compact `<span>label</span><select>` pair)
-  in the Remove Silences `.viewctl`: `#silTrack` chooses WHICH track's audio is
-  measured ("Auto" = every video track with media; otherwise an AUDIO track like
-  `A1`/`A2`, with the count of media clips on it — the list offers audio tracks
-  only, this being a loudness scan). Persisted at `editagent.silence.track`; changing it
-  rescans immediately when levels are already loaded. It scopes the MEASUREMENT
-  only: cuts still ripple every track, so picture and sound stay in sync.
+  in the Remove Silences `.viewctl`: `#silTrack` chooses WHICH audio track is
+  measured. No "Auto": it defaults to **A1** (falling to the first audio track
+  with media when A1 is absent), options are `A1`/`A2`... with each track's
+  media-clip count. Persisted at `editagent.silence.track`; changing it rescans
+  immediately when levels are already loaded. It scopes the MEASUREMENT only:
+  cuts still ripple every track, so picture and sound stay in sync.
 - **Retakes transcription scope** — the `.statusrow` carries the same `.selctl`
-  Track picker (`#retTrack`, persisted `editagent.retake.track`) plus a
-  **Generated segments** switch (`#segGen`, persisted `editagent.retake.generated`,
-  default ON): ON = clip/pause-tiled segments (best after Remove Silences shaped
-  the edit), OFF = caption-style sentence/word chunks (`segment_mode:"words"`,
-  ~14 words max, breaks at . ! ? — like YouTube subtitles), so an UNCUT recording
-  still yields readable segments. Changing either control re-segments from the
-  cached transcript (free, marks carried over) and never bills on its own.
+  Track picker (`#retTrack`, persisted `editagent.retake.track`, default A1, no
+  "Auto") plus a **Generated segments** switch (`#segGen`, persisted
+  `editagent.retake.generated`, default ON): ON = clip/pause-tiled segments (the
+  silence tab's output shapes them) — the Track picker HIDES in this mode
+  (`#retTrackWrap.hidden`), no track choice applies; OFF = ONE SEGMENT PER
+  SENTENCE (`segment_mode:"words"`, breaks at . ! ?, a 24-word safety cap for
+  run-ons — like YouTube subtitles), transcribed from the picked track, so an
+  UNCUT recording still yields readable segments. Changing either control
+  re-segments from the cached transcript (free, marks carried over) and never
+  bills on its own.
 - **Layout compaction** — Remove Silences has ONE toolbar row (`.sil-bar`:
   Scan/Rescan + truncating status + `.viewctl` track picker/Follow/zoom); the legend keeps
   swatches + a "drag to pan · scroll to zoom" hint. The threshold block is a

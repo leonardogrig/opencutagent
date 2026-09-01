@@ -568,7 +568,7 @@ const ENV_SPECS = [
   { key: "EDITAGENT_TRANSCRIBE_PAD", def: "0.25", desc: "Seconds of audio context kept on each edge of a transcribed range so edge words aren't clipped." },
   { key: "EDITAGENT_REBUILD_MIN", def: "100", desc: "Ripple applies with at least this many cuts use the fast XML rebuild instead of razoring in place. 0 disables it." },
   { key: "EDITAGENT_ROUNDTRIP", def: "1", desc: "Fast applies round-trip Premiere's own XML so effects survive. Set 0 to use the bare rebuild (drops effects)." },
-  { key: "EDITAGENT_SEGMENT_WORDS", def: "14", desc: "Max words per segment when Generated segments is OFF (caption-style chunks). Sentences still break earlier at . ! ?" },
+  { key: "EDITAGENT_SEGMENT_WORDS", def: "24", desc: "Safety cap on words per segment when Generated segments is OFF (one segment per sentence; the cap only splits punctuation-less run-on speech)." },
   { key: "EDITAGENT_TRIM_EXCESS_PAD", def: "0.15", desc: "Seconds of breathing room kept around words when Remove excess trims non-speech air." },
   { key: "EDITAGENT_TRIM_EXCESS_MIN", def: "0.2", desc: "Non-speech air shorter than this many seconds is left alone by Remove excess." },
   { key: "EDITAGENT_ANIM_TIMEOUT_MS", def: "1200000", desc: "Hard timeout for one animation chat turn, in milliseconds." },

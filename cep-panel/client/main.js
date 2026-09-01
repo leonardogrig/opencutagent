@@ -1117,7 +1117,7 @@
       s.scanning = true; updateButtons();
       setLoading(el.silScanBtn, true, "Scanning…");
       setStatus("Reading audio levels…");
-      callServer("analyzeLevels", { refresh: !!refresh, track: s.track || undefined }, function (m) { setStatus(m); }).then(
+      callServer("analyzeLevels", { refresh: !!refresh, track: s.track }, function (m) { setStatus(m); }).then(
         function (res) {
           s.data = res;
           s.loaded = true; s.scanning = false;
@@ -1621,24 +1621,31 @@
     }
     function fit() { setView(s.full0, s.full1); }
 
-    /* ----- scan track picker ----- */
-    function loadTrack() { try { return window.localStorage.getItem("editagent.silence.track") || ""; } catch (e) { return ""; } }
-    function persistTrack() { try { window.localStorage.setItem("editagent.silence.track", s.track || ""); } catch (e) {} }
+    /* ----- scan track picker (audio tracks; defaults to A1, no "auto") ----- */
+    function loadTrack() { try { return window.localStorage.getItem("editagent.silence.track") || "A1"; } catch (e) { return "A1"; } }
+    function persistTrack() { try { window.localStorage.setItem("editagent.silence.track", s.track || "A1"); } catch (e) {} }
 
-    // Rebuild the <select> from the sequence's tracks. A persisted pick that this
-    // sequence doesn't have (switched projects) is kept as an option rather than
-    // silently dropped to Auto, so the label never lies about what will be scanned.
+    // Rebuild the <select> from the sequence's audio tracks. The persisted pick
+    // wins when the sequence has it; otherwise fall to the first track (A1) —
+    // there is deliberately no "Auto" (the scan always names a real track).
     function renderTracks() {
       if (!el.silTrack) return;
-      var html = '<option value="">Auto</option>', i, t, found = false;
+      var html = "", i, t, found = false;
       for (i = 0; i < s.tracks.length; i++) {
         t = s.tracks[i];
         if (t.track === s.track) found = true;
         html += '<option value="' + esc(t.track) + '">' + esc(t.track) + " (" + t.withMedia + ")</option>";
       }
-      if (s.track && !found) html += '<option value="' + esc(s.track) + '">' + esc(s.track) + "</option>";
+      if (!s.tracks.length) {
+        // List not known yet (or a video-only timeline): show the pick itself.
+        var v = s.track || "A1";
+        el.silTrack.innerHTML = '<option value="' + esc(v) + '">' + esc(v) + "</option>";
+        el.silTrack.value = v;
+        return;
+      }
       el.silTrack.innerHTML = html;
-      el.silTrack.value = s.track || "";
+      if (found) el.silTrack.value = s.track;
+      else { s.track = s.tracks[0].track; persistTrack(); el.silTrack.value = s.track; }
     }
 
     // One cheap host read so the picker is populated BEFORE the first scan.
@@ -1882,12 +1889,12 @@
       renderTracks();
       if (el.silTrack) {
         el.silTrack.addEventListener("change", function () {
-          s.track = el.silTrack.value || "";
+          s.track = el.silTrack.value || "A1";
           persistTrack();
           // Already scanned? The picture on screen is now the wrong track, so
           // re-measure straight away instead of leaving a stale waveform behind.
           if (s.loaded && connected() && !s.scanning && !s.applying && !s.undoing && !s.aiBusy) scan(false);
-          else setStatus(s.track ? "Scanning " + s.track + " on the next scan." : "Scanning every video track with media.");
+          else setStatus("Scanning " + s.track + " on the next scan.");
         });
       }
       wireCanvas(); wireOverview();
@@ -1920,7 +1927,7 @@
       // timeline-change detection (cheap signature piggybacked on the playhead poll):
       pendingSig: null, sigStable: 0, loadedSig: null,
       // transcription scope + segmentation (sent on every load/resync):
-      track: loadPref("editagent.retake.track", ""),           // "" = auto, else "A1"...
+      track: loadPref("editagent.retake.track", "A1"),         // audio track for caption mode (no "auto")
       genSegs: loadPref("editagent.retake.generated", "1") !== "0", // ON = clip-tiled (default), OFF = caption chunks
       tracks: [], tracksFetched: false,
     };
@@ -1935,7 +1942,7 @@
     var el = {};
 
     function cache() {
-      ["loadBtn", "aiBtn", "retakeStopBtn", "statusbar", "segments", "removeGaps", "trimExcess", "applyBtn", "softApplyBtn", "clearMarkersBtn", "exportBtn", "undoBtn", "startOverBtn", "summary", "followToggle", "retTrack", "segGen"].forEach(function (id) { el[id] = $(id); });
+      ["loadBtn", "aiBtn", "retakeStopBtn", "statusbar", "segments", "removeGaps", "trimExcess", "applyBtn", "softApplyBtn", "clearMarkersBtn", "exportBtn", "undoBtn", "startOverBtn", "summary", "followToggle", "retTrack", "retTrackWrap", "segGen"].forEach(function (id) { el[id] = $(id); });
     }
     function loadFollow() { try { state.follow = window.localStorage.getItem("editagent.retake.follow") !== "0"; } catch (e) { state.follow = true; } }
     function persistFollow() { try { window.localStorage.setItem("editagent.retake.follow", state.follow ? "1" : "0"); } catch (e) {} }
@@ -1965,7 +1972,9 @@
     // an auto-resync MUST use the same mode or reconnecting flips the list.
     function loadParams() {
       var p = { transcribe_model: AI.sttModel(), segment_mode: state.genSegs ? "clip" : "words" };
-      if (state.track) p.track = state.track;
+      // The Track pick only applies to caption mode; Generated segments follow
+      // the timeline's clips (the silence tab's output), no track choice needed.
+      if (!state.genSegs && state.track) p.track = state.track;
       return p;
     }
     // on connect and when the tab opens, so a known project appears by itself.
@@ -2011,7 +2020,7 @@
       // must build the SAME list the Transcribe button would.
       var aiP = AI.params();
       aiP.segment_mode = state.genSegs ? "clip" : "words";
-      if (state.track) aiP.track = state.track;
+      if (!state.genSegs && state.track) aiP.track = state.track;
       callServer("aiRetakes", aiP, function (m) { setStatus(m); }).then(
         function (res) {
           setLoading(el.aiBtn, false, "Analyze w/ Claude"); setBusy(false);
@@ -2453,9 +2462,10 @@
         el.followToggle.addEventListener("change", function () { state.follow = el.followToggle.checked; persistFollow(); });
       }
       renderTracks();
+      syncTrackVisibility();
       if (el.retTrack) {
         el.retTrack.addEventListener("change", function () {
-          state.track = el.retTrack.value || "";
+          state.track = el.retTrack.value || "A1";
           savePref("editagent.retake.track", state.track);
           rebuildFromCache("Track changed.");
         });
@@ -2465,23 +2475,33 @@
         el.segGen.addEventListener("change", function () {
           state.genSegs = el.segGen.checked;
           savePref("editagent.retake.generated", state.genSegs ? "1" : "0");
-          rebuildFromCache(state.genSegs ? "Rebuilding timeline segments." : "Rebuilding caption-style segments.");
+          syncTrackVisibility();
+          rebuildFromCache(state.genSegs ? "Rebuilding timeline segments." : "Rebuilding sentence segments.");
         });
       }
     }
 
     /* ----- transcription scope controls (track picker + segment mode) ----- */
+    // The Track pick belongs to caption mode only; with Generated segments ON
+    // the transcript follows the timeline's clips, so the picker hides entirely.
+    function syncTrackVisibility() { if (el.retTrackWrap) el.retTrackWrap.hidden = state.genSegs; }
     function renderTracks() {
       if (!el.retTrack) return;
-      var html = '<option value="">Auto</option>', i, t, found = false;
+      var html = "", i, t, found = false;
       for (i = 0; i < state.tracks.length; i++) {
         t = state.tracks[i];
         if (t.track === state.track) found = true;
         html += '<option value="' + esc(t.track) + '">' + esc(t.track) + " (" + t.withMedia + ")</option>";
       }
-      if (state.track && !found) html += '<option value="' + esc(state.track) + '">' + esc(state.track) + "</option>";
+      if (!state.tracks.length) {
+        var v = state.track || "A1";
+        el.retTrack.innerHTML = '<option value="' + esc(v) + '">' + esc(v) + "</option>";
+        el.retTrack.value = v;
+        return;
+      }
       el.retTrack.innerHTML = html;
-      el.retTrack.value = state.track || "";
+      if (found) el.retTrack.value = state.track;
+      else { state.track = state.tracks[0].track; savePref("editagent.retake.track", state.track); el.retTrack.value = state.track; }
     }
     function fetchTracks(force) {
       if (!connected() || (state.tracksFetched && !force)) return;

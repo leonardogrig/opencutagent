@@ -100,7 +100,7 @@ export async function buildReview(ctx, opts = {}, onProgress = () => {}) {
   // (sentence enders + a word cap) so an UNCUT recording still yields readable
   // sentence-sized segments with exact timings.
   const captionMode = opts.segmentMode === "words";
-  const maxWords = Math.max(4, Number(liveEnv("EDITAGENT_SEGMENT_WORDS")) || 14);
+  const maxWords = Math.max(4, Number(liveEnv("EDITAGENT_SEGMENT_WORDS")) || 24);
 
   const segments = [];
   const skipped = [];

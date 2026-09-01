@@ -152,10 +152,10 @@
             </button>
             <span id="silStatus" class="summary"></span>
             <span class="viewctl">
-              <label class="selctl" id="silTrackWrap" data-tip="Which track's audio is measured. Pick the one your voice is on when the timeline stacks music, b-roll or silent graphics. Cuts still ripple every track, so picture and sound stay in sync.">
+              <label class="selctl" id="silTrackWrap" data-tip="Which audio track is measured (defaults to A1). Pick the one your voice is on when the timeline stacks music or b-roll. Cuts still ripple every track, so picture and sound stay in sync.">
                 <span>Scan</span>
                 <select id="silTrack">
-                  <option value="">Auto</option>
+                  <option value="A1">A1</option>
                 </select>
               </label>
               <label class="chk follow" data-tip="Keeps the view scrolled to Premiere's playhead during playback. Click the waveform to move the playhead there; drag to pan the view.">
@@ -366,13 +366,13 @@
         </div>
         <div class="statusrow">
           <div id="statusbar" class="statusbar"></div>
-          <label class="selctl" id="retTrackWrap" data-tip="Which track's audio is transcribed. Pick the one your voice is on when the timeline stacks music, b-roll or silent graphics.">
+          <label class="selctl" id="retTrackWrap" data-tip="Which audio track is transcribed (defaults to A1). Pick the one your voice is on when the timeline stacks music or b-roll. Only used for caption-style segments; with Generated segments ON the transcript follows the timeline's clips.">
             <span>Track</span>
             <select id="retTrack">
-              <option value="">Auto</option>
+              <option value="A1">A1</option>
             </select>
           </label>
-          <label class="chk follow" data-tip="ON: segments follow your timeline's clips and pauses — best after Remove Silences shaped the edit. OFF: caption-style segments (a sentence or ~14 words each, like YouTube subtitles) with exact timings — works great on an uncut recording, no silence pass needed.">
+          <label class="chk follow" data-tip="ON: segments follow your timeline's clips and pauses — best after Remove Silences shaped the edit. OFF: one segment per sentence with exact timings (like YouTube subtitles), transcribed from the Track picked on the left — works great on an uncut recording, no silence pass needed.">
             <input type="checkbox" id="segGen" class="switch" role="switch" checked /> Generated segments
           </label>
           <label class="chk follow" data-tip="Highlights and scrolls to the segment under Premiere's playhead as you scrub. Click a segment's time to jump the playhead there.">

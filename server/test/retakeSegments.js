@@ -415,10 +415,13 @@ check("wrapCaption: wraps past maxLen on word boundary", wrapCaption("aaaa bbbb 
   for (let i = 0; i < 20; i++) say("w" + i, 2.0 + i * 0.3); // 20 uncapped words, no punctuation
 
   const chunks = groupIntoCaptionChunks(flow, { maxWords: 8, gapSec: 0.5 });
-  // "Hello there." has only 2 words (< minWords 3) so the break waits for "test."
-  check("caption: sentence break waits for minWords", chunks[0].text === "Hello there. This is a test.", chunks[0] && chunks[0].text);
-  check("caption: word cap splits the run-on (8+8+4)", chunks.length === 4 && chunks[1].wordCount === 8 && chunks[2].wordCount === 8 && chunks[3].wordCount === 4, chunks.map((c) => c.wordCount));
-  check("caption: chunk times come from its own words", approx(chunks[1].start, 2.0) && approx(chunks[1].end, 2.0 + 7 * 0.3 + 0.2), [chunks[1].start, chunks[1].end]);
+  // One segment per sentence: "Hello there." (2 words, >= minWords 2) stands alone.
+  check("caption: one segment per sentence", chunks[0].text === "Hello there." && chunks[1].text === "This is a test.", [chunks[0] && chunks[0].text, chunks[1] && chunks[1].text]);
+  check("caption: word cap splits the run-on (8+8+4)", chunks.length === 5 && chunks[2].wordCount === 8 && chunks[3].wordCount === 8 && chunks[4].wordCount === 4, chunks.map((c) => c.wordCount));
+  check("caption: chunk times come from its own words", approx(chunks[2].start, 2.0) && approx(chunks[2].end, 2.0 + 7 * 0.3 + 0.2), [chunks[2].start, chunks[2].end]);
+  // A one-word "sentence" is below minWords and merges forward instead of standing alone.
+  const tiny = groupIntoCaptionChunks([word("Yes.", 0, 0.2), word("So", 0.4, 0.6), word("anyway.", 0.7, 0.9)], {});
+  check("caption: sub-minWords sentence merges forward", tiny.length === 1 && tiny[0].text === "Yes. So anyway.", tiny.map((c) => c.text));
 
   // Pauses still break (same rule as phrase mode), and audio events don't count.
   const paused = groupIntoCaptionChunks(WORDS, { maxWords: 8 });
@@ -436,7 +439,7 @@ check("wrapCaption: wraps past maxLen on word boundary", wrapCaption("aaaa bbbb 
   // partitionClip works identically on caption chunks (tiling contract holds).
   const capParts = partitionClip(clip("V1.0", 0, 8.5, 0), chunks);
   const tiled = capParts.every((p, i) => i === 0 || approx(capParts[i - 1].end, p.start));
-  check("caption: partitionClip tiles chunks with no gaps", capParts.length === 4 && tiled && approx(capParts[0].start, 0) && approx(capParts[3].end, 8.5), capParts.map((p) => [p.start, p.end]));
+  check("caption: partitionClip tiles chunks with no gaps", capParts.length === 5 && tiled && approx(capParts[0].start, 0) && approx(capParts[4].end, 8.5), capParts.map((p) => [p.start, p.end]));
 }
 
 console.log(failures === 0 ? "\nAll retake-segment checks passed." : `\n${failures} retake-segment check(s) FAILED.`);

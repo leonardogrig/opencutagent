@@ -48,18 +48,17 @@ export function groupIntoPhrases(words, silenceThreshold = 0.5) {
 const SENTENCE_END_RE = /[.!?…]["'”’)\]]*$/;
 
 /**
- * Caption-style grouping (the Retakes "Generated segments OFF" mode): break on
- * pauses and speaker changes like groupIntoPhrases, but ALSO close a chunk at
- * sentence-ending punctuation (once it holds >= minWords) and hard-cap it at
- * maxWords — YouTube-caption-like chunks with exact word timings, so a long
- * uncut clip still yields reviewable sentence-sized segments instead of one
- * giant phrase-bounded blob.
+ * Caption-style grouping (the Retakes "Generated segments OFF" mode): ONE
+ * SEGMENT PER SENTENCE. Breaks on pauses and speaker changes like
+ * groupIntoPhrases, but the primary break is sentence-ending punctuation
+ * (once the chunk holds >= minWords); maxWords is only a safety cap that
+ * splits punctuation-less run-on speech. Exact word timings per chunk.
  */
 export function groupIntoCaptionChunks(words, opts = {}) {
   return groupTokens(words, {
     gapSec: opts.gapSec != null ? opts.gapSec : 0.5,
-    maxWords: opts.maxWords != null ? opts.maxWords : 14,
-    minWords: opts.minWords != null ? opts.minWords : 3,
+    maxWords: opts.maxWords != null ? opts.maxWords : 24,
+    minWords: opts.minWords != null ? opts.minWords : 2,
     sentenceBreak: true,
   });
 }
