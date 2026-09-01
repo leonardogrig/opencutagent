@@ -42,7 +42,8 @@ type LocalFont = {
   format?: string;
 };
 
-async function loadInlineFont({ family, src, weight, format = "woff2" }: LocalFont): Promise<void> {
+/** Exported so style packages can load their own inlined faces the same safe way. */
+export async function loadInlineFont({ family, src, weight, format = "woff2" }: LocalFont): Promise<void> {
   const handle = delayRender(`Loading font ${family}`, {
     timeoutInMilliseconds: ATTEMPT_TIMEOUT_MS * ATTEMPTS + 15000,
     retries: FRAME_RETRIES,

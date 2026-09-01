@@ -12,7 +12,7 @@ import {
   normalizeSizeOverride, fmtTokens, fmtElapsed, normalizeRawDuration, buildRawBrief, createRawJob,
   sequenceFrameSize, setRawLength,
 } from "../animation/jobs.js";
-import { listStyles, readStyleSkill, readFramesSkill, kitDir as animWorkspaceDir, mergePreservedGuide, guideVersion } from "../animation/kit.js";
+import { listStyles, readStyleSkill, readFramesSkill, kitDir as animWorkspaceDir, mergePreservedGuide, guideVersion, KIT_TEMPLATE_DIR } from "../animation/kit.js";
 import {
   parseVideoSize, fitTransform, canvasMapFilter, frameName,
   mergeFrameSpans, prepareFrameAssets, removeFrameAssets, v1FrameSpans,
@@ -165,6 +165,18 @@ check("excalidraw style is registered", styles.some((s) => s.id === "excalidraw"
 check("n8n style is registered (not default)", styles.some((s) => s.id === "n8n" && !s.default && !s.custom), styles);
 check("style skill is readable", /Learnings log/i.test(readStyleSkill("excalidraw")), null);
 check("n8n skill teaches its shipped components", /SketchNode/.test(readStyleSkill("n8n")) && /Learnings log/i.test(readStyleSkill("n8n")), null);
+check("n8n-brand style is registered (not default, ships src)", styles.some((s) => s.id === "n8n-brand" && !s.default && !s.custom), styles);
+{
+  const skill = readStyleSkill("n8n-brand");
+  check("n8n-brand skill teaches its shipped components + log", /BrandCanvas/.test(skill) && /Capsule/.test(skill) && /PixelGlyph/.test(skill) && /Learnings log/i.test(skill), null);
+  check("n8n-brand skill forbids the sketch engine", /NOT hand-drawn/i.test(skill) && /no rough\.js/i.test(skill), null);
+  check("n8n-brand skill has no em dashes", !/\u2014/.test(skill), null);
+  const brandSrc = join(KIT_TEMPLATE_DIR, "styles", "n8n-brand", "src");
+  check("n8n-brand package ships theme + index + inlined fonts", ["theme.ts", "index.ts", "fontdata/interTight.ts", "fontdata/geistMono.ts"].every((f) => existsSync(join(brandSrc, f))), null);
+  const theme = readFileSync(join(brandSrc, "theme.ts"), "utf8");
+  check("n8n-brand theme carries the signature pink + five modes", /#FF91AC/.test(theme) && ["neutralLight", "neutralDark", "maker", "pinkLight", "pinkDark"].every((m) => theme.includes(m + ":")), null);
+  check("scaffold points at the n8n-brand package", sceneScaffold({ ...job, style: "n8n-brand" }, { styleHasSrc: true }).includes('"../../../styles/n8n-brand/src"'), null);
+}
 check("unknown style skill is empty", readStyleSkill("nope") === "", readStyleSkill("nope"));
 
 /* ---------- workspace-file helpers (temp dirs) ---------- */

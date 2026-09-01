@@ -243,7 +243,7 @@ export function buildBrief(job, { selected, transcriptLines, wordsBySegment = ne
     "",
     `- Canvas: ${job.width}x${job.height} @ ${job.fps} fps`,
     `- Duration: ${job.durationInFrames} frames (${durSec}s). FIXED: fill exactly this time.`,
-    `- Background: ${job.background === "transparent" ? "transparent (overlay on the footage; use <Canvas transparent>)" : "solid dark canvas (covers the footage like b-roll; use <Canvas>)"}`,
+    `- Background: ${job.background === "transparent" ? "transparent (overlay on the footage; use <Canvas transparent>, or the style's own canvas component with `transparent`)" : "solid canvas (covers the footage like b-roll; use <Canvas>, or the style's own canvas component when the style guide names one)"}`,
     `- Style: ${job.style}`,
   ];
   if (job.seeFrames) {
@@ -293,7 +293,7 @@ export function buildRawBrief(job) {
     "",
     `- Canvas: ${job.width}x${job.height} @ ${job.fps} fps`,
     `- Duration: ${job.durationInFrames} frames (${durSec}s). FIXED: fill exactly this time.`,
-    `- Background: ${job.background === "transparent" ? "transparent (overlay on the footage; use <Canvas transparent>)" : "solid dark canvas (covers the footage like b-roll; use <Canvas>)"}`,
+    `- Background: ${job.background === "transparent" ? "transparent (overlay on the footage; use <Canvas transparent>, or the style's own canvas component with `transparent`)" : "solid canvas (covers the footage like b-roll; use <Canvas>, or the style's own canvas component when the style guide names one)"}`,
     `- Style: ${job.style}`,
     "",
     "## What you are animating",

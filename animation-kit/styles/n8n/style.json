@@ -1,6 +1,6 @@
 {
   "id": "n8n",
-  "name": "n8n workflow",
-  "description": "The hand-drawn dark whiteboard in n8n's brand: n8n pink accent, sketchy square workflow nodes with connectors and traveling data pulses, the AI-builder chat, all on the near-black dot-grid canvas.",
+  "name": "n8n sketch",
+  "description": "The hand-drawn dark whiteboard in n8n's older brand look: pink #EA4B71 accent, sketchy square workflow nodes with connectors and traveling data pulses, the AI-builder chat, all on the near-black dot-grid canvas. For the 2026 brand system (crisp, capsules, dot grid, pixel glyphs) pick 'n8n brand'.",
   "skill": "SKILL.md"
 }

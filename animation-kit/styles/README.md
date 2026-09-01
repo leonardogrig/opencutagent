@@ -30,6 +30,9 @@ styles/<id>/
 
 Keep packages code-only: no npm dependencies of their own (the kit's package.json is shared) and
 no static assets that need `public/` — inline SVG paths instead (see `n8n/src/n8nLogoPaths.ts`).
+A style may ship its own fonts, but only INLINED as data: URIs in `src/fontdata/*.ts` (add the
+`.woff2` under `styles/<id>/fonts/` and an entry to `scripts/inline-fonts.mjs`), loaded through
+the engine's `loadInlineFont` — a render must never make a font request.
 
 ## Custom styles (user-made)
 
@@ -42,7 +45,17 @@ same id wins over a workspace copy.
 
 - `excalidraw/` — hand-drawn dark whiteboard, violet accent (the default). Skill-only package:
   it styles the shared engine components directly.
-- `n8n/` — the same hand-drawn engine in n8n's brand: pink `#EA4B71` accent, sketchy square
-  workflow nodes + connectors with data pulses, the AI-builder chat. Ships components under
-  `src/`. Note: the n8n name, logo geometry (`n8nLogoPaths.ts`), and brand palette belong to
-  n8n; the agent only renders the logo when explicitly asked.
+- `n8n/` ("n8n sketch") — the same hand-drawn engine in n8n's older brand look: pink `#EA4B71`
+  accent, sketchy square workflow nodes + connectors with data pulses, the AI-builder chat. Ships
+  components under `src/`. Note: the n8n name, logo geometry (`n8nLogoPaths.ts`), and brand
+  palette belong to n8n; the agent only renders the logo when explicitly asked.
+- `n8n-brand/` — n8n's 2026 brand system, crisp and NOT hand-drawn: one signature pink
+  (`#FF91AC`) with the full pink/grey ramps, five graphic modes (Neutral light/dark, Maker, Pink
+  light/dark) resolved through a `BrandCanvas` context, grotesk headlines + mono capsule labels
+  (EK Baumer is named first in the font stacks; the bundled OFL stand-ins Inter Tight + Geist Mono
+  are inlined under `src/fontdata/`, regenerated from `fonts/*.woff2` by
+  `node scripts/inline-fonts.mjs`), the product dot grid, capsules (chain/stack), emboss plates,
+  cards, pixel glyphs, the pink-wash transition and a reconstructed `+++` mark (logo only when
+  asked). The whole system lives in `src/theme.ts`; components never hardcode a value.
+  `examples/Showcase.tsx` exercises every component (four pages, 1920x1080, 360 frames): copy it
+  into a job folder to see the style, or use it as the QA scene after changing a component.

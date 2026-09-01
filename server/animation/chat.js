@@ -79,7 +79,7 @@ export function buildSystemAppend(job, styleSkill, framesSkill = "") {
     `Your job: ${job.id}`,
     `- Work ONLY inside src/jobs/${job.id}/ (Scene.tsx is yours; brief.md is the assignment; refs/ holds the user's reference images).`,
     `- Canvas ${job.width}x${job.height} @ ${job.fps} fps, duration ${job.durationInFrames} frames (${durSec}s) — FIXED, never change job.json or the manifest.`,
-    `- Background: ${job.background === "transparent" ? "TRANSPARENT overlay (the render keeps alpha over the user's footage — use <Canvas transparent>)" : "solid dark canvas (b-roll that covers the footage — use <Canvas>)"}.`,
+    `- Background: ${job.background === "transparent" ? "TRANSPARENT overlay (the render keeps alpha over the user's footage — use <Canvas transparent>, or the style's own canvas component with `transparent` when the style guide names one)" : "solid canvas (b-roll that covers the footage — use <Canvas>, or the style's own canvas component when the style guide names one)"}.`,
     ...(job.seeFrames ? [
       "- FRAME-AWARE: this overlay draws ON the user's footage. Anchor drawings to what is actually on screen and only while it is there; the frames guide below is authoritative for the workflow (frames-map.json with its change analysis, the exported frames + sheets, scripts/grab-frames.mjs, anchors.json + scripts/check-anchors.mjs, DebugFrame verification). The server re-runs check-anchors before rendering and sends failures back to you, so run it yourself first. Scale every annotation to the time its target is on screen: under ~1.5s = a bare border/underline/arrow and NO text; text only when there is time to read it (about 0.6s + 0.25s per word after it finishes drawing).",
     ] : []),

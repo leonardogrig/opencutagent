@@ -16,7 +16,7 @@ canvas size, fps, exact duration and background mode are in the system prompt an
    your beats to it).
 3. **Silent, always.** Never add `<Audio>`/sound; the narration lives on the Premiere timeline.
 4. **Frame-pure and seeded.** Every animated value = f(`useCurrentFrame()`). No `Math.random`,
-   `Date.now`, `useState`-for-animation, CSS transitions. Every rough.js shape needs a fixed
+   `Date.now`, `useState`-for-animation, CSS transitions. Every rough.js shape (sketch styles) needs a fixed
    `seed` (from `SEEDS`/`seedFor`) or it "boils" between frames.
 5. **No em dashes in on-screen text.** Use a comma, colon, or period instead.
 6. When you finish a working version, **write `src/jobs/<jobId>/render.json`** (see "Finishing").
@@ -35,7 +35,8 @@ canvas size, fps, exact duration and background mode are in the system prompt an
   `StickyNote`, `Callout`, `Title`, `Label`, `Badge`, `BulletList`, `DotGrid`.
 - Some styles ship their OWN components/theme under `styles/<style>/src/` (import from
   `../../../styles/<style>/src`). Your job's style guide documents them; when it does, prefer
-  them over the generic blocks. Style code is read-only too (except the Learnings Log).
+  them over the generic blocks, and when the guide says the style is NOT hand-drawn (n8n brand),
+  do not use the sketch primitives at all. Style code is read-only too (except the Learnings Log).
 
 ## Your job folder
 - `brief.md` — the assignment: selected narration with word timings, full-video transcript
@@ -47,10 +48,11 @@ canvas size, fps, exact duration and background mode are in the system prompt an
 - `render.json` — your "ready" signal (see below).
 
 ## Background mode
-- `solid` — start your tree with `<Canvas>` (dark canvas + dot-grid). The clip fully covers the
-  footage below it, like cutaway b-roll.
-- `transparent` — start with `<Canvas transparent>`; the render keeps alpha and overlays the
-  user's footage. Leave real transparency where the footage should show; strokes and text float
+- `solid` — start your tree with `<Canvas>` (dark canvas + dot-grid), or the style's own canvas
+  component when its guide names one (e.g. `<BrandCanvas>` in the n8n brand style). The clip fully
+  covers the footage below it, like cutaway b-roll.
+- `transparent` — start with `<Canvas transparent>` (or the style canvas with `transparent`); the
+  render keeps alpha and overlays the user's footage. Leave real transparency where the footage should show; strokes and text float
   over the video, so keep them big and high-contrast.
 
 ## Frame-aware jobs ("Use frames")
