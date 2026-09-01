@@ -165,8 +165,8 @@ check("excalidraw style is registered", styles.some((s) => s.id === "excalidraw"
 check("n8n style is registered (not default)", styles.some((s) => s.id === "n8n" && !s.default && !s.custom), styles);
 check("style skill is readable", /Learnings log/i.test(readStyleSkill("excalidraw")), null);
 check("n8n skill teaches its shipped components", /SketchNode/.test(readStyleSkill("n8n")) && /Learnings log/i.test(readStyleSkill("n8n")), null);
-check("n8n-brand style is registered (not default, ships src)", styles.some((s) => s.id === "n8n-brand" && !s.default && !s.custom), styles);
-{
+if (existsSync(join(KIT_TEMPLATE_DIR, "styles", "n8n-brand"))) { // private style package, absent in public checkouts
+  check("n8n-brand style is registered (not default, ships src)", styles.some((s) => s.id === "n8n-brand" && !s.default && !s.custom), styles);
   const skill = readStyleSkill("n8n-brand");
   check("n8n-brand skill teaches its shipped components + log", /BrandCanvas/.test(skill) && /Capsule/.test(skill) && /PixelGlyph/.test(skill) && /Learnings log/i.test(skill), null);
   check("n8n-brand skill forbids the sketch engine", /NOT hand-drawn/i.test(skill) && /no rough\.js/i.test(skill), null);
