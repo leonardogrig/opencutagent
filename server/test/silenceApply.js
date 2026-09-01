@@ -1,6 +1,6 @@
 // Checks for the silence apply path (no ffmpeg/Premiere): source-second ranges
 // map to the right timeline frames, apply right-to-left, and mode → ripple/mute.
-import { resolveRangesToFrames, applySilenceRanges, computeRangesForSession, framesToCutList, mergeFrameRanges } from "../silences.js";
+import { resolveRangesToFrames, applySilenceRanges, computeRangesForSession, framesToCutList, mergeFrameRanges, selectClips, listMediaTracks } from "../silences.js";
 import { TICKS_PER_SECOND } from "../transcription/timecode.js";
 
 const TPS = Number(TICKS_PER_SECOND);
@@ -124,6 +124,45 @@ const silence = {
 const sessRanges = computeRangesForSession(silence);
 check("session ranges tagged with clipId", sessRanges.length === 1 && sessRanges[0].clipId === "V1.0", sessRanges);
 check("session range ~1.12..1.88s", Math.abs(sessRanges[0].srcStart - 1.12) < 1e-9 && Math.abs(sessRanges[0].srcEnd - 1.88) < 1e-9, sessRanges[0]);
+
+// --- scan track selection (the panel's track picker) ---
+const tlClip = (id, track, trackType, trackIndex, hasMedia = true) => ({
+  id, track, trackType, trackIndex, hasMedia, mediaPath: hasMedia ? "/m.mp4" : null,
+});
+const trackTl = {
+  clips: [
+    tlClip("V1.0", "V1", "video", 0),
+    tlClip("V2.0", "V2", "video", 1),
+    tlClip("V2.1", "V2", "video", 1, false), // a graphic with no source media
+    tlClip("A1.0", "A1", "audio", 0),
+    tlClip("A2.0", "A2", "audio", 1),
+  ],
+};
+
+let sel = selectClips(trackTl, null, null);
+check("no track: every video clip with media", sel.length === 2 && sel.every((c) => c.trackType === "video"), sel.map((c) => c.id));
+
+sel = selectClips(trackTl, null, "A2");
+check("track A2: only that track", sel.length === 1 && sel[0].id === "A2.0", sel.map((c) => c.id));
+
+sel = selectClips(trackTl, null, "a1"); // the panel sends what the select holds; be case-tolerant
+check("track is case-insensitive", sel.length === 1 && sel[0].id === "A1.0", sel.map((c) => c.id));
+
+sel = selectClips(trackTl, null, "auto");
+check('track "auto" means no filter', sel.length === 2, sel.map((c) => c.id));
+
+sel = selectClips(trackTl, "A1.0", "V1");
+check("explicit clip_id still wins over track", sel.length === 1 && sel[0].id === "A1.0", sel.map((c) => c.id));
+
+let threw = null;
+try { selectClips(trackTl, null, "V9"); } catch (e) { threw = e.message; }
+check("empty track throws and names the audio tracks that have media", !!threw && /V9/.test(threw) && /A1, A2/.test(threw), threw);
+
+// The picker lists AUDIO tracks only (this is a loudness scan; Auto covers the
+// video-derived default), and a track with NO media never appears.
+const tracks = listMediaTracks({ clips: [...trackTl.clips, tlClip("A3.0", "A3", "audio", 2, false), tlClip("A3.1", "A3", "audio", 2)] });
+check("track list is audio-only, in track order", tracks.map((t) => t.track).join(",") === "A1,A2,A3", tracks.map((t) => t.track));
+check("track list counts clips with media", tracks[2].withMedia === 1 && tracks[2].clips === 2, tracks[2]);
 
 console.log(failures === 0 ? "\nAll silence-apply checks passed." : `\n${failures} check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);

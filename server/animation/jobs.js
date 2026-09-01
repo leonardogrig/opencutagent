@@ -12,6 +12,7 @@ import { reconcile, requireReview } from "../review.js";
 import { readCachedWords } from "../transcription/transcribe.js";
 import { round3, mmss, fmtDur, fmtElapsed as fmtElapsedSec, getTimeline, callHostHealing } from "../tools/util.js";
 import { kitDir } from "./kit.js";
+import { prepareFrameAssets, removeFrameAssets, v1FrameSpans } from "./frames.js";
 import { liveEnv } from "../config.js";
 import { log } from "../log.js";
 
@@ -244,12 +245,24 @@ export function buildBrief(job, { selected, transcriptLines, wordsBySegment = ne
     `- Duration: ${job.durationInFrames} frames (${durSec}s). FIXED: fill exactly this time.`,
     `- Background: ${job.background === "transparent" ? "transparent (overlay on the footage; use <Canvas transparent>)" : "solid dark canvas (covers the footage like b-roll; use <Canvas>)"}`,
     `- Style: ${job.style}`,
+  ];
+  if (job.seeFrames) {
+    lines.push(
+      "",
+      "## Screen frames (frame-aware overlay)",
+      "This animation draws ON the real footage under it: anchor your drawings to what is",
+      "actually on screen (buttons, text, UI regions) and only while it is there. Start with",
+      `src/jobs/${job.id}/frames-map.json and the overview thumbnails in public/frames/${job.id}/overview/;`,
+      "the frames guide in your system prompt has the full workflow and rules."
+    );
+  }
+  lines.push(
     "",
     "## The narration you are animating (the selected timeline range)",
     "Times are seconds relative to the animation start (t=0 is your first frame).",
     "The voiceover plays on the Premiere timeline under your clip; sync your visual beats to it.",
-    "",
-  ];
+    ""
+  );
   for (const s of selected) {
     lines.push(`- [${s.relStart.toFixed(2)}s - ${s.relEnd.toFixed(2)}s] ${esc(s.text) || "(no speech)"}`);
     const words = wordsBySegment.get(s.index);
@@ -452,7 +465,7 @@ export async function createRawJob(ctx, { durationSec, style, background, trackI
  * folder + brief, registers the composition, and persists the job record next
  * to the Premiere project.
  */
-export async function createJob(ctx, { indexes, style, background, trackIndex, projectDir, width: widthOpt, height: heightOpt }, kitDirPath) {
+export async function createJob(ctx, { indexes, style, background, trackIndex, projectDir, width: widthOpt, height: heightOpt, seeFrames = false, onProgress = () => {}, token = null }, kitDirPath) {
   const review = requireReview(ctx);
   const { map, timeline } = await reconcile(ctx);
   const check = validateSelection(review.segments, map, indexes);
@@ -474,7 +487,10 @@ export async function createJob(ctx, { indexes, style, background, trackIndex, p
     title: jobTitle(selText),
     createdAt: Date.now(),
     style: style || "excalidraw",
-    background: background === "transparent" ? "transparent" : "solid",
+    // Frame-aware jobs only make sense as an overlay: the drawings must sit ON
+    // the footage they anchor to, so the background is forced transparent.
+    background: seeFrames || background === "transparent" ? "transparent" : "solid",
+    seeFrames: !!seeFrames,
     trackIndex: clampTrackIndex(trackIndex),
     sizeSource,
     fps, width, height, durationInFrames,
@@ -516,9 +532,36 @@ export async function createJob(ctx, { indexes, style, background, trackIndex, p
     .map((s) => `${selectedSet.has(s.index) ? ">>> " : "- "}[${mmss(s.startSec)}] ${s.text}`);
   scaffoldKitJob(job, kitDirPath, buildBrief(job, { selected, transcriptLines, wordsBySegment }));
 
+  // Frame-aware: export the sequence's own frames across the range (Premiere
+  // renders them, so transforms and timing are exactly what plays), analyze
+  // them for screen changes, and write frames-map.json + contact sheets. The
+  // V1 source spans only feed the fallback for builds that can't export.
+  // Best-effort by design — a footage problem becomes a note in the created
+  // message and the agent falls back to a free canvas.
+  let framesNote = "";
+  if (seeFrames) {
+    try {
+      const v1 = v1FrameSpans(timeline.clips || [], check.range);
+      const prep = await prepareFrameAssets({ ctx, job, seq, spans: v1.spans, kitDirPath, onProgress, token });
+      const warnings = [...prep.warnings];
+      if (prep.source === "media") warnings.push(...v1.warnings);
+      if (!prep.hasVideo && prep.source !== "sequence" && !v1.spans.length) warnings.push("Nothing is on V1 in the selected range either.");
+      framesNote = prep.hasVideo
+        ? ` Frame-aware: the agent sees ${prep.frameCount} frames of what plays under this range` +
+          (prep.changes.filter((c) => c.kind === "major").length ? ` (${prep.changes.filter((c) => c.kind === "major").length} screen change(s) detected)` : "") +
+          " and anchors drawings to what is on screen."
+        : "";
+      if (warnings.length) framesNote += " " + warnings.join(" ");
+    } catch (e) {
+      if (token && token.aborted) throw e;
+      framesNote = ` Frame scan failed (${e.message}); the agent will animate on a free canvas.`;
+      log(`animation frames prep failed (${job.id}): ${e.message}`);
+    }
+  }
+
   regenerateManifest(kitDirPath);
   saveJob(job);
-  appendChat(job, { role: "system", kind: "created", text: `Animation created for ${selected.length} segment(s), ${fmtDur(durationSec)}.` });
+  appendChat(job, { role: "system", kind: "created", text: `Animation created for ${selected.length} segment(s), ${fmtDur(durationSec)}.${framesNote}` });
   return job;
 }
 
@@ -556,6 +599,7 @@ export function setRawLength(job, kitDirPath, durationSec) {
  */
 export function discardJob(job, kitDirPath, { deleteOutputs = false } = {}) {
   try { rmSync(join(kitDirPath, "src", "jobs", job.id), { recursive: true, force: true }); } catch { /* ignore */ }
+  removeFrameAssets(job.id, kitDirPath); // extracted footage frames are workspace-only, never referenced by Premiere
   regenerateManifest(kitDirPath);
   if (deleteOutputs) {
     try { rmSync(job.outDir, { recursive: true, force: true }); } catch { /* ignore */ }

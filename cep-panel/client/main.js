@@ -64,6 +64,9 @@
     return Math.floor(m / 60) + "h " + pad2(m % 60) + "m";
   }
   function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+  // localStorage with a fallback (CEP can throw on storage access).
+  function loadPref(key, def) { try { var v = window.localStorage.getItem(key); return v == null ? def : v; } catch (e) { return def; } }
+  function savePref(key, val) { try { window.localStorage.setItem(key, val); } catch (e) {} }
   function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
   function $(id) { return document.getElementById(id); }
 
@@ -249,6 +252,9 @@
       AI.refreshCloud();
       // A previously-transcribed project loads by itself, from cache, for free.
       Retake.autoLoad();
+      // The sequence may have changed while we were offline — re-read its tracks.
+      Silence.refreshTracks();
+      Retake.refreshTracks();
       if (activeTab === "retake") Retake.onShow(); // resume playhead sync after a reconnect
       else if (activeTab === "silence") Silence.onShow();
       else if (activeTab === "anim") Anim.onShow();
@@ -1034,6 +1040,11 @@
       snapNext: false,        // force the next reading to recenter (set on scan/show), even if unmoved
       pollTimer: null, pollInFlight: false,
       pendingConfig: null,
+      // scan track: "" = auto (every video track with media), else a track like "A1".
+      // Only chooses which audio is MEASURED — cuts still ripple every track.
+      track: loadTrack(),
+      tracks: [],             // [{track, trackType, trackIndex, withMedia}] from the server
+      tracksFetched: false,
       customPresets: loadCustomPresets(),
     };
 
@@ -1042,7 +1053,7 @@
     function cache() {
       ["silScanBtn", "silStopBtn", "silStopBtn2", "silUndoBtn", "silStatus", "silCanvas", "vizEmpty", "silOverview", "ovEnd",
        "thrValue", "thrSlider", "calcAi", "presetRow", "minSilence", "keepTalk",
-       "marginBefore", "marginAfter", "silSummary", "cutBtn", "zoomIn", "zoomOut", "zoomFit", "silFollow"
+       "marginBefore", "marginAfter", "silSummary", "cutBtn", "zoomIn", "zoomOut", "zoomFit", "silFollow", "silTrack"
       ].forEach(function (id) { el[id] = $(id); });
     }
 
@@ -1106,15 +1117,17 @@
       s.scanning = true; updateButtons();
       setLoading(el.silScanBtn, true, "Scanning…");
       setStatus("Reading audio levels…");
-      callServer("analyzeLevels", { refresh: !!refresh }, function (m) { setStatus(m); }).then(
+      callServer("analyzeLevels", { refresh: !!refresh, track: s.track }, function (m) { setStatus(m); }).then(
         function (res) {
           s.data = res;
           s.loaded = true; s.scanning = false;
           ingest(res);
           setLoading(el.silScanBtn, false, "Rescan");
           el.vizEmpty.style.display = "none";
+          // The scan just read the timeline — refresh the picker from what it saw.
+          if (res.tracks && res.tracks.length) { s.tracks = res.tracks; s.tracksFetched = true; renderTracks(); }
           var sk = res.skipped && res.skipped.length ? " (" + res.skipped.length + " clip(s) skipped)" : "";
-          setStatus(res.clips.length + " clip(s) analyzed" + sk);
+          setStatus(res.clips.length + " clip(s) analyzed" + (s.track ? " on " + s.track : "") + sk);
           if (s.pendingConfig) { var pc = s.pendingConfig; s.pendingConfig = null; applyPushedConfig(pc); }
           recompute(); updateButtons();
         },
@@ -1501,7 +1514,11 @@
       if (!connected() || s.scanning || s.applying || s.undoing) return;
       s.aiBusy = true; updateButtons();
       setStatus("Claude is choosing a threshold…");
-      callServer("aiThreshold", AI.params(), function (m) { setStatus(m); }).then(
+      // Carry the scan track: without it a first-scan-from-here would measure a
+      // different set of clips than the tab is showing.
+      var thrParams = AI.params();
+      if (s.track) thrParams.track = s.track;
+      callServer("aiThreshold", thrParams, function (m) { setStatus(m); }).then(
         function (res) {
           s.aiBusy = false;
           setThreshold(res.thresholdDb, false); recompute();
@@ -1603,6 +1620,43 @@
       setView(c - span / 2, c + span / 2);
     }
     function fit() { setView(s.full0, s.full1); }
+
+    /* ----- scan track picker (audio tracks; defaults to A1, no "auto") ----- */
+    function loadTrack() { try { return window.localStorage.getItem("editagent.silence.track") || "A1"; } catch (e) { return "A1"; } }
+    function persistTrack() { try { window.localStorage.setItem("editagent.silence.track", s.track || "A1"); } catch (e) {} }
+
+    // Rebuild the <select> from the sequence's audio tracks. The persisted pick
+    // wins when the sequence has it; otherwise fall to the first track (A1) —
+    // there is deliberately no "Auto" (the scan always names a real track).
+    function renderTracks() {
+      if (!el.silTrack) return;
+      var html = "", i, t, found = false;
+      for (i = 0; i < s.tracks.length; i++) {
+        t = s.tracks[i];
+        if (t.track === s.track) found = true;
+        html += '<option value="' + esc(t.track) + '">' + esc(t.track) + " (" + t.withMedia + ")</option>";
+      }
+      if (!s.tracks.length) {
+        // List not known yet (or a video-only timeline): show the pick itself.
+        var v = s.track || "A1";
+        el.silTrack.innerHTML = '<option value="' + esc(v) + '">' + esc(v) + "</option>";
+        el.silTrack.value = v;
+        return;
+      }
+      el.silTrack.innerHTML = html;
+      if (found) el.silTrack.value = s.track;
+      else { s.track = s.tracks[0].track; persistTrack(); el.silTrack.value = s.track; }
+    }
+
+    // One cheap host read so the picker is populated BEFORE the first scan.
+    function fetchTracks(force) {
+      if (!connected() || (s.tracksFetched && !force)) return;
+      s.tracksFetched = true;
+      callServer("timelineTracks", {}).then(
+        function (res) { s.tracks = (res && res.tracks) || []; renderTracks(); },
+        function () { s.tracksFetched = false; } // no sequence open yet; retry on the next show
+      );
+    }
 
     /* ----- playhead follow (mirrors the Retakes tab) ----- */
     function loadFollow() { try { s.follow = window.localStorage.getItem("editagent.silence.follow") !== "0"; } catch (e) { s.follow = true; } }
@@ -1832,18 +1886,30 @@
           if (s.follow) snapToPlayhead();
         });
       }
+      renderTracks();
+      if (el.silTrack) {
+        el.silTrack.addEventListener("change", function () {
+          s.track = el.silTrack.value || "A1";
+          persistTrack();
+          // Already scanned? The picture on screen is now the wrong track, so
+          // re-measure straight away instead of leaving a stale waveform behind.
+          if (s.loaded && connected() && !s.scanning && !s.applying && !s.undoing && !s.aiBusy) scan(false);
+          else setStatus("Scanning " + s.track + " on the next scan.");
+        });
+      }
       wireCanvas(); wireOverview();
       window.addEventListener("resize", function () { if (activeTab === "silence") draw(); });
     }
 
     function onShow() {
       s.snapNext = true; // re-center on the playhead when the tab comes into view
+      fetchTracks(false); // populate the track picker before any scan
       draw(); // scan is explicit (the Scan Audio button) — no auto-scan on open
       startPoll(); // playhead follow (self-gates until audio is scanned)
     }
     function onHide() { stopPoll(); }
 
-    return { wire: wire, onShow: onShow, onHide: onHide, updateButtons: updateButtons, applyPushedConfig: applyPushedConfig, markUndoable: markUndoable, clearUndoable: clearUndoable };
+    return { wire: wire, onShow: onShow, onHide: onHide, updateButtons: updateButtons, applyPushedConfig: applyPushedConfig, markUndoable: markUndoable, clearUndoable: clearUndoable, refreshTracks: function () { fetchTracks(true); } };
   })();
 
   /* ================================================================
@@ -1860,8 +1926,15 @@
       mapRefreshAt: 0, mapRefreshing: false,
       // timeline-change detection (cheap signature piggybacked on the playhead poll):
       pendingSig: null, sigStable: 0, loadedSig: null,
+      // transcription scope + segmentation (sent on every load/resync):
+      track: loadPref("editagent.retake.track", "A1"),         // audio track for caption mode (no "auto")
+      genSegs: loadPref("editagent.retake.generated", "1") !== "0", // ON = clip-tiled (default), OFF = caption chunks
+      tracks: [], tracksFetched: false,
     };
     var POLL_MS = 300, MAP_LAZY_MS = 4000;
+    // The load button's two labels. Constants because the label is also READ back
+    // to decide whether the button has flipped to its loaded state.
+    var LOAD_LABEL = "Transcribe", RELOAD_LABEL = "Reload";
     var expanded = {};
     var groupExpanded = {}; // collapsed runs of consecutive "Removed" segments (key = first seg index)
     var GROUP_COLORS = ["#5a8cff", "#d9a441", "#c77dff", "#4fd1c5", "#f06595", "#9ccc65", "#ff8a65", "#7e9cff"];
@@ -1869,7 +1942,7 @@
     var el = {};
 
     function cache() {
-      ["loadBtn", "aiBtn", "retakeStopBtn", "statusbar", "segments", "removeGaps", "trimExcess", "applyBtn", "softApplyBtn", "clearMarkersBtn", "exportBtn", "undoBtn", "startOverBtn", "summary", "followToggle"].forEach(function (id) { el[id] = $(id); });
+      ["loadBtn", "aiBtn", "retakeStopBtn", "statusbar", "segments", "removeGaps", "trimExcess", "applyBtn", "softApplyBtn", "clearMarkersBtn", "exportBtn", "undoBtn", "startOverBtn", "summary", "followToggle", "retTrack", "retTrackWrap", "segGen"].forEach(function (id) { el[id] = $(id); });
     }
     function loadFollow() { try { state.follow = window.localStorage.getItem("editagent.retake.follow") !== "0"; } catch (e) { state.follow = true; } }
     function persistFollow() { try { window.localStorage.setItem("editagent.retake.follow", state.follow ? "1" : "0"); } catch (e) {} }
@@ -1887,17 +1960,27 @@
       var fr = res.fragments || {};
       var extra = (fr.autoCut ? " · " + fr.autoCut + " pop(s) auto-cut" : "") + (fr.flagged ? " · " + fr.flagged + " flagged" : "");
       setStatus(state.segments.length + " segments loaded" + (note ? " " + note : "") + extra + (res.skipped && res.skipped.length ? " (" + res.skipped.length + " clip(s) skipped)" : ""));
-      setLabel(el.loadBtn, "Reload");
+      setLabel(el.loadBtn, RELOAD_LABEL);
       render();
       refreshMap(true); // reconcile positions for playhead-sync + re-insert state
       Anim.onSegments(); // the Animation tab's picker shares this list
     }
     // Silent, cost-free load: the server builds segments only if the transcript
     // cache fully covers the current timeline (never bills, needs no key). Runs
+    // Params every load/resync shares: model + the Track pick + segmentation
+    // mode ("clip" = Generated segments ON, "words" = caption-style chunks) —
+    // an auto-resync MUST use the same mode or reconnecting flips the list.
+    function loadParams() {
+      var p = { transcribe_model: AI.sttModel(), segment_mode: state.genSegs ? "clip" : "words" };
+      // The Track pick only applies to caption mode; Generated segments follow
+      // the timeline's clips (the silence tab's output), no track choice needed.
+      if (!state.genSegs && state.track) p.track = state.track;
+      return p;
+    }
     // on connect and when the tab opens, so a known project appears by itself.
     function autoLoad() {
       if (!connected() || state.busy || state.loaded) return;
-      callServer("autoLoadSegments", { transcribe_model: AI.sttModel() }).then(
+      callServer("autoLoadSegments", loadParams()).then(
         function (res) { if (res && res.loaded) adoptReview(res, "from cache"); },
         function () { /* silent: the Load button remains the explicit path */ }
       );
@@ -1905,16 +1988,17 @@
     function loadSegments(fresh) {
       setBusy(true); setStatus("Loading…"); setLoading(el.loadBtn, true, "Loading…");
       el.segments.innerHTML = skeletonRows();
-      callServer("loadSegments", { transcribe_model: AI.sttModel(), fresh: fresh === true }, function (m) { setStatus(m); }).then(
+      var p = loadParams(); p.fresh = fresh === true;
+      callServer("loadSegments", p, function (m) { setStatus(m); }).then(
         function (res) {
-          setLoading(el.loadBtn, false, "Reload"); setBusy(false);
+          setLoading(el.loadBtn, false, RELOAD_LABEL); setBusy(false);
           adoptReview(res, "");
         },
         function (err) {
           var cancelled = /cancel/i.test(err.message);
           var keyIssue = AI.handleKeyError(err); // missing/rejected key → the key modal explains it
           setStatus(cancelled ? "Stopped." : keyIssue ? "Add your ElevenLabs API key, then Load again." : err.message, !cancelled && !keyIssue);
-          setLoading(el.loadBtn, false, state.loaded ? "Reload" : "Load segments"); setBusy(false); render();
+          setLoading(el.loadBtn, false, state.loaded ? RELOAD_LABEL : LOAD_LABEL); setBusy(false); render();
         }
       );
     }
@@ -1932,7 +2016,12 @@
       // footage really needs the key, the server's error opens the key modal.)
       if (!connected()) { setStatus("Not connected.", true); return; }
       setBusy(true); setStatus("Claude is analyzing the retakes…"); setLoading(el.aiBtn, true, "Analyzing…");
-      callServer("aiRetakes", AI.params(), function (m) { setStatus(m); }).then(
+      // Carry the transcription scope: if this analyze has to load first, it
+      // must build the SAME list the Transcribe button would.
+      var aiP = AI.params();
+      aiP.segment_mode = state.genSegs ? "clip" : "words";
+      if (!state.genSegs && state.track) aiP.track = state.track;
+      callServer("aiRetakes", aiP, function (m) { setStatus(m); }).then(
         function (res) {
           setLoading(el.aiBtn, false, "Analyze w/ Claude"); setBusy(false);
           // The Keep/Cut marks themselves arrive via the reviewUpdate push (markDecisions).
@@ -1951,7 +2040,7 @@
     function applyReviewUpdate(segments) {
       if (!Array.isArray(segments)) return;
       state.segments = segments; state.loaded = true;
-      if (lblText(el.loadBtn) === "Load segments") setLabel(el.loadBtn, "Reload");
+      if (lblText(el.loadBtn) === LOAD_LABEL) setLabel(el.loadBtn, RELOAD_LABEL);
       var cuts = segments.filter(function (s) { return s.decision === "cut" && !s.protected; }).length;
       setStatus("Claude marked " + cuts + " segment(s) to cut. Review below, then Apply All.");
       render();
@@ -2029,7 +2118,7 @@
     function exportTranscript() {
       if (state.busy) return;
       if (!connected()) { setStatus("Not connected.", true); return; }
-      if (!state.loaded) { toast("Load segments first."); return; }
+      if (!state.loaded) { toast("Transcribe the timeline first."); return; }
       var hasSpeech = state.segments.some(function (s) {
         return s.decision !== "cut" && s.fragment !== "empty" && s.wordCount > 0 && s.text && String(s.text).trim();
       });
@@ -2138,7 +2227,7 @@
     function resync() {
       if (!connected() || state.busy) return;
       setStatus("Timeline changed. Updating…");
-      callServer("autoLoadSegments", { transcribe_model: AI.sttModel() }).then(
+      callServer("autoLoadSegments", loadParams()).then(
         function (res) {
           if (res && res.loaded) adoptReview(res, "(timeline changed)");
           else { setStatus("Timeline changed. Click Reload to transcribe the new parts."); refreshMap(true); }
@@ -2148,7 +2237,7 @@
     }
     function startPoll() { if (state.pollTimer) clearInterval(state.pollTimer); state.pollTimer = setInterval(pollTick, POLL_MS); }
     function stopPoll() { if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; } }
-    function onShow() { if (state.loaded) refreshMap(true); else autoLoad(); startPoll(); }
+    function onShow() { fetchTracks(false); if (state.loaded) refreshMap(true); else autoLoad(); startPoll(); }
     function onHide() {
       stopPoll();
       state.currentIndex = null;
@@ -2317,7 +2406,7 @@
     function isEmptyCut(s) { return s.fragment === "empty" && s.decision === "cut" && !s.protected && !isAbsent(s); }
     function render() {
       if (!state.segments.length) {
-        el.segments.innerHTML = '<div class="empty-state"><div class="es-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88M14.47 14.48 20 20M8.12 8.12 12 12"/></svg></div><div class="es-title">No segments loaded</div><div class="es-sub">Open a sequence in Premiere, then <b>Load segments</b> to transcribe the timeline.</div></div>';
+        el.segments.innerHTML = '<div class="empty-state"><div class="es-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88M14.47 14.48 20 20M8.12 8.12 12 12"/></svg></div><div class="es-title">No segments loaded</div><div class="es-sub">Open a sequence in Premiere, then <b>Transcribe</b> to read the timeline.</div></div>';
         updateButtons(); return;
       }
       var html = "", i = 0, j, run;
@@ -2372,6 +2461,70 @@
         el.followToggle.checked = state.follow;
         el.followToggle.addEventListener("change", function () { state.follow = el.followToggle.checked; persistFollow(); });
       }
+      renderTracks();
+      syncTrackVisibility();
+      if (el.retTrack) {
+        el.retTrack.addEventListener("change", function () {
+          state.track = el.retTrack.value || "A1";
+          savePref("editagent.retake.track", state.track);
+          rebuildFromCache("Track changed.");
+        });
+      }
+      if (el.segGen) {
+        el.segGen.checked = state.genSegs;
+        el.segGen.addEventListener("change", function () {
+          state.genSegs = el.segGen.checked;
+          savePref("editagent.retake.generated", state.genSegs ? "1" : "0");
+          syncTrackVisibility();
+          rebuildFromCache(state.genSegs ? "Rebuilding timeline segments." : "Rebuilding sentence segments.");
+        });
+      }
+    }
+
+    /* ----- transcription scope controls (track picker + segment mode) ----- */
+    // The Track pick belongs to caption mode only; with Generated segments ON
+    // the transcript follows the timeline's clips, so the picker hides entirely.
+    function syncTrackVisibility() { if (el.retTrackWrap) el.retTrackWrap.hidden = state.genSegs; }
+    function renderTracks() {
+      if (!el.retTrack) return;
+      var html = "", i, t, found = false;
+      for (i = 0; i < state.tracks.length; i++) {
+        t = state.tracks[i];
+        if (t.track === state.track) found = true;
+        html += '<option value="' + esc(t.track) + '">' + esc(t.track) + " (" + t.withMedia + ")</option>";
+      }
+      if (!state.tracks.length) {
+        var v = state.track || "A1";
+        el.retTrack.innerHTML = '<option value="' + esc(v) + '">' + esc(v) + "</option>";
+        el.retTrack.value = v;
+        return;
+      }
+      el.retTrack.innerHTML = html;
+      if (found) el.retTrack.value = state.track;
+      else { state.track = state.tracks[0].track; savePref("editagent.retake.track", state.track); el.retTrack.value = state.track; }
+    }
+    function fetchTracks(force) {
+      if (!connected() || (state.tracksFetched && !force)) return;
+      state.tracksFetched = true;
+      callServer("timelineTracks", {}).then(
+        function (res) { state.tracks = (res && res.tracks) || []; renderTracks(); },
+        function () { state.tracksFetched = false; }
+      );
+    }
+    // A scope change re-segments from the cached transcript (free, marks carried
+    // over). If the cache doesn't cover the new scope, say so — Transcribe stays
+    // the explicit paid path, a toggle must never bill on its own.
+    function rebuildFromCache(prefix) {
+      if (!state.loaded) return; // nothing shown yet — the pick applies on the next Transcribe
+      if (!connected() || state.busy) { setStatus(prefix + " Applies on the next Transcribe."); return; }
+      setStatus(prefix + " Updating…");
+      callServer("autoLoadSegments", loadParams()).then(
+        function (res) {
+          if (res && res.loaded) adoptReview(res, "");
+          else setStatus(prefix + " Click " + RELOAD_LABEL + " to transcribe this scope (not cached yet).");
+        },
+        function () { setStatus(prefix + " Click " + RELOAD_LABEL + " to transcribe this scope.", true); }
+      );
     }
 
     // setMap is exposed for browser QA (inject a fake reconcile map alongside
@@ -2381,6 +2534,7 @@
     return {
       wire: wire, updateButtons: updateButtons, applyReviewUpdate: applyReviewUpdate, setMap: setMap,
       markUndoable: markUndoable, clearUndoable: clearUndoable, onShow: onShow, onHide: onHide, refreshMap: refreshMap,
+      refreshTracks: function () { fetchTracks(true); },
       autoLoad: autoLoad,
       segments: function () { return state.segments; },
       liveMap: function () { return state.liveMap; },
@@ -2413,6 +2567,7 @@
       vTracks: null,        // the sequence's real video track count (from the playhead poll)
       // output size: "seq" mirrors the sequence; presets/custom pin an explicit size
       size: "seq", orient: "h", customW: "", customH: "",
+      frames: false,        // "Use frames": the agent sees the footage and draws around what's on screen
       activityEl: null, activityText: null, // the in-chat "working" bubble (one at most)
     };
     var POLL_MS = 300;
@@ -2421,6 +2576,7 @@
     function cache() {
       ["animStyle", "animStyleWrap", "animBgCtl", "animTrack", "animTrackWrap", "animFollow", "animBackBtn",
        "animSize", "animSizeWrap", "animOrientCtl", "animSizeCustom", "animW", "animH",
+       "animFrames", "animFramesWrap",
        "animSelect", "animStatus", "animJobs", "animSegs", "animRawBtn",
        "animSelSummary", "animCreateBtn", "animChatWrap", "animJobInfo", "animChatLog",
        "animAttach", "animText", "animSendBtn", "animStopBtn", "animImgBtn", "animFile",
@@ -2437,6 +2593,7 @@
         state.orient = window.localStorage.getItem("editagent.anim.orient") === "v" ? "v" : "h";
         state.customW = window.localStorage.getItem("editagent.anim.w") || "";
         state.customH = window.localStorage.getItem("editagent.anim.h") || "";
+        state.frames = window.localStorage.getItem("editagent.anim.frames") === "1";
       } catch (e) {}
     }
     function persistPrefs() {
@@ -2449,6 +2606,7 @@
         window.localStorage.setItem("editagent.anim.orient", state.orient);
         window.localStorage.setItem("editagent.anim.w", el.animW ? el.animW.value : state.customW);
         window.localStorage.setItem("editagent.anim.h", el.animH ? el.animH.value : state.customH);
+        window.localStorage.setItem("editagent.anim.frames", state.frames ? "1" : "0");
       } catch (e) {}
     }
     function setStatus(text, isErr) { el.animStatus.textContent = text || ""; el.animStatus.className = "statusbar" + (isErr ? " err" : ""); }
@@ -2535,10 +2693,19 @@
     function friendlyTool(ev) {
       var d = String(ev.detail || "").toLowerCase();
       switch (ev.name) {
-        case "Read": return d === "brief.md" ? "Reading the brief and your narration…" : "Reviewing the material…";
+        case "Read":
+          if (d === "brief.md") return "Reading the brief and your narration…";
+          // Footage frames exported for a frame-aware job (full frames, sheets, crops, check sheets).
+          if (/^(t\d|crop-|ov|sheet)/.test(d) || d.indexOf("frames-map") >= 0 || d.indexOf("frames/") >= 0) return "Studying your footage frames…";
+          if (d.indexOf("anchor-report") >= 0) return "Checking the drawings against the footage…";
+          return "Reviewing the material…";
         case "Write":
-        case "Edit": return "Sketching the animation…";
+        case "Edit":
+          if (d === "anchors.json") return "Noting what each drawing points at…";
+          return "Sketching the animation…";
         case "Bash":
+          if (d.indexOf("check-anchors") >= 0) return "Checking the drawings against the footage…";
+          if (d.indexOf("grab-frames") >= 0) return "Grabbing frames from your footage…";
           if (d.indexOf("still") >= 0 || d.indexOf("preview") >= 0 || d.indexOf("frame") >= 0) return "Rendering a preview frame to check the look…";
           if (d.indexOf("tsc") >= 0 || d.indexOf("typecheck") >= 0 || d.indexOf("check") >= 0) return "Double-checking everything works…";
           return "Working…";
@@ -2653,7 +2820,7 @@
     function renderSegs() {
       var loaded = Retake.isLoaded();
       if (!loaded) {
-        el.animSegs.innerHTML = '<div class="empty-state"><div class="es-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5z"/><rect x="3" y="16" width="18" height="5" rx="1.5"/></svg></div><div class="es-title">No segments loaded</div><div class="es-sub">Load segments in the <b>Retakes</b> tab first, then pick a run of neighboring segments here to animate over. Or start a <b>raw animation</b> below: it needs no transcript and lands at the playhead.</div></div>';
+        el.animSegs.innerHTML = '<div class="empty-state"><div class="es-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5z"/><rect x="3" y="16" width="18" height="5" rx="1.5"/></svg></div><div class="es-title">No segments loaded</div><div class="es-sub">Run <b>Transcribe</b> in the <b>Retakes</b> tab first, then pick a run of neighboring segments here to animate over. Or start a <b>raw animation</b> below: it needs no transcript and lands at the playhead.</div></div>';
         return;
       }
       var segs = eligible();
@@ -2701,6 +2868,12 @@
         // CEP has no :has() — the selected pill is a JS-set class (see styles.css .segctl)
         inputs[i].parentNode.className = "segopt" + (inputs[i].checked ? " on" : "");
       }
+    }
+    // "Use frames" implies a transparent overlay (the drawings sit ON the
+    // footage), so while it's on the bg choice is moot and its control hides.
+    function syncFramesCtl() {
+      el.animFrames.checked = state.frames;
+      if (!state.activeJobId) el.animBgCtl.style.display = state.frames ? "none" : "";
     }
     // The Track select mirrors the sequence's REAL tracks (V1..Vn, playhead-poll
     // fed) plus one new track above them; before the first poll it falls back to
@@ -2770,6 +2943,8 @@
         return '<div class="anim-msg system placed" data-seek="' + m.targetSeconds + '" data-tip="Click to move the Premiere playhead to where this animation starts."><span>' + esc(m.text) + " Click to view.</span></div>";
       }
       if (m.kind === "error") return '<div class="anim-msg system err"><span>' + esc(m.text) + "</span></div>";
+      // multi-line notes (a frame-check report) keep their line breaks
+      if (m.kind === "note" && /\n/.test(String(m.text || ""))) return '<div class="anim-msg system note"><span>' + esc(m.text) + "</span></div>";
       return '<div class="anim-msg system"><span>' + esc(m.text) + "</span></div>";
     }
     /* A version the agent built that never reached the timeline: offer the
@@ -2822,7 +2997,7 @@
       el.animJobInfo.innerHTML =
         '<span class="anim-job-name">' + esc(job.title || job.id) + "</span>" + lenHtml +
         '<span class="anim-job-meta">' + (job.raw ? "" : fmtDur(job.durationSec) + " · ") +
-        esc(job.background === "transparent" ? "no bg" : "solid bg") + " · " + esc(job.style) +
+        esc(job.seeFrames ? "on frames" : job.background === "transparent" ? "no bg" : "solid bg") + " · " + esc(job.style) +
         (job.sizeSource === "custom" ? " · " + job.width + "x" + job.height : "") + "</span>" +
         '<span class="seg-badges">' + jobBadge(job, true) + "</span>" +
         (job.outDir
@@ -2984,6 +3159,7 @@
       el.animSizeWrap.style.display = "none";
       el.animOrientCtl.style.display = "none";
       el.animSizeCustom.style.display = "none";
+      el.animFramesWrap.style.display = "none";
       stopPoll(); // no segment list to highlight in chat mode
       renderChat();
       updateButtons();
@@ -2998,7 +3174,9 @@
       el.animBgCtl.style.display = "";
       el.animTrackWrap.style.display = "";
       el.animSizeWrap.style.display = "";
+      el.animFramesWrap.style.display = "";
       syncSizeCtl(); // orient/custom visibility depends on the chosen size
+      syncFramesCtl(); // bg control visibility depends on the frames toggle
       setChatStatus("");
       renderSegs(); renderJobs(); updateButtons();
       if (activeTab === "anim") startPoll();
@@ -3018,7 +3196,12 @@
       var p = AI.params();
       var params = { style: state.style, background: state.background, track: parseInt(state.track, 10), model: p.model, effort: p.effort };
       if (raw) params.raw = true; // the server's default length; editable in the chat
-      else params.segments = state.selection;
+      else {
+        params.segments = state.selection;
+        // Frame-aware: the agent sees the footage and draws around what's on
+        // screen; only meaningful as a transparent overlay, so bg is forced.
+        if (state.frames) { params.seeFrames = true; params.background = "transparent"; }
+      }
       if (size) { params.width = size.width; params.height = size.height; }
       callServer("animCreate", params, function (m) { setStatus(m); }).then(
         function (res) {
@@ -3134,6 +3317,11 @@
         appendSystemBubble(ev.text || "Stopped.", false);
         state.turnNoticeShown = true;
         setChatStatus("");
+      } else if (ev.kind === "frameCheck") {
+        // The server found drawings that don't match the footage and is
+        // sending the agent back before rendering: say so, keep the status live.
+        appendSystemBubble(ev.text || "Frame check: some drawings don't match the footage. Fixing them before rendering.", false);
+        setChatStatus("Fixing the drawings against the footage…", true);
       } else if (ev.kind === "turnDone") {
         setChatStatus("");
       }
@@ -3211,6 +3399,7 @@
       for (i = 0; i < inputs.length; i++) inputs[i].disabled = !!state.activeJobId || state.busy;
       var oInputs = el.animOrientCtl.querySelectorAll("input");
       for (i = 0; i < oInputs.length; i++) oInputs[i].disabled = !!state.activeJobId || state.busy;
+      el.animFrames.disabled = !!state.activeJobId || state.busy;
       updateSelSummary();
     }
     function onShow() {
@@ -3274,6 +3463,8 @@
       });
       el.animW.addEventListener("change", persistPrefs);
       el.animH.addEventListener("change", persistPrefs);
+      syncFramesCtl();
+      el.animFrames.addEventListener("change", function () { state.frames = el.animFrames.checked; persistPrefs(); syncFramesCtl(); });
       el.animFollow.checked = state.follow;
       el.animFollow.addEventListener("change", function () { state.follow = el.animFollow.checked; persistPrefs(); });
       // The raw length lives in the chat header, which is rebuilt on every

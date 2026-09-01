@@ -117,8 +117,26 @@ primary buttons keep crisp dark labels (white-on-Ember is only ~3.1:1).
   mode while the link is healthy (`applyConn()` in main.js: the local helper
   server is an implementation detail there); problem states like "Waiting for
   server…" / "Not in Premiere" always show, in both modes.
+- **Scan track picker** — `.selctl` (a compact `<span>label</span><select>` pair)
+  in the Remove Silences `.viewctl`: `#silTrack` chooses WHICH audio track is
+  measured. No "Auto": it defaults to **A1** (falling to the first audio track
+  with media when A1 is absent), options are `A1`/`A2`... with each track's
+  media-clip count. Persisted at `editagent.silence.track`; changing it rescans
+  immediately when levels are already loaded. It scopes the MEASUREMENT only:
+  cuts still ripple every track, so picture and sound stay in sync.
+- **Retakes transcription scope** — the `.statusrow` carries the same `.selctl`
+  Track picker (`#retTrack`, persisted `editagent.retake.track`, default A1, no
+  "Auto") plus a **Generated segments** switch (`#segGen`, persisted
+  `editagent.retake.generated`, default ON): ON = clip/pause-tiled segments (the
+  silence tab's output shapes them) — the Track picker HIDES in this mode
+  (`#retTrackWrap.hidden`), no track choice applies; OFF = ONE SEGMENT PER
+  SENTENCE (`segment_mode:"words"`, breaks at . ! ?, a 24-word safety cap for
+  run-ons — like YouTube subtitles), transcribed from the picked track, so an
+  UNCUT recording still yields readable segments. Changing either control
+  re-segments from the cached transcript (free, marks carried over) and never
+  bills on its own.
 - **Layout compaction** — Remove Silences has ONE toolbar row (`.sil-bar`:
-  Scan/Rescan + truncating status + `.viewctl` Follow/zoom); the legend keeps
+  Scan/Rescan + truncating status + `.viewctl` track picker/Follow/zoom); the legend keeps
   swatches + a "drag to pan · scroll to zoom" hint. The threshold block is a
   `.thr-head` row (label + live value + `a.calc-ai`) over the slider. Retakes puts
   status + Follow on one `.statusrow`. Waveform canvas: click = seek, drag = pan,
@@ -142,7 +160,16 @@ primary buttons keep crisp dark labels (white-on-Ember is only ~3.1:1).
   `.anim-job` rows — meta includes a relative age ("14 min ago") and a hover
   `.anim-job-x` delete with an inline two-step "Sure?" (`.confirm`) — plus a
   `.anim-segrow` segment list with `.anim-check` boxes; a selection must be one
-  contiguous run, `.sel` = accent tint + inset accent bar). Inside a chat the
+  contiguous run, `.sel` = accent tint + inset accent bar). The creation bar
+  ends in a **"Use frames"** `.chk` switch (`#animFramesWrap`, persisted
+  `editagent.anim.frames`): frame-aware overlay mode — the agent sees Premiere's
+  own frames of the sequence (exported every 0.5s with the animation track
+  hidden) and draws around what's on screen; the server re-checks each anchored
+  drawing against those frames before rendering (a `frameCheck` event posts a
+  system bubble, multi-line `.anim-msg.system.note` reports keep their line
+  breaks). While it's on the bg toggle
+  HIDES (transparent is implied); segment animations only (raw ignores it), and
+  the chat header meta reads "on frames". Inside a chat the
   Style select + bg toggle HIDE (fixed at creation) and the header gains a
   `.anim-folder` icon button that reveals the job's folder in Finder/Explorer.
   and **chat** (`.anim-chatwrap`: `.anim-jobinfo` header, `.anim-chat` scroll of

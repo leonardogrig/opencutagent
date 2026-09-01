@@ -181,7 +181,7 @@ After changing server code, restart the Claude session (or `/mcp` → reconnect 
 
 ## Use it: Retakes (transcript-based)
 
-1. **Load segments**: transcribes the timeline (ElevenLabs Scribe, cached; only the source ranges actually used on the timeline are billed) and lists indexed spoken segments, each starting as Keep. Clips with no speech are auto-marked Cut.
+1. **Transcribe**: transcribes the timeline (ElevenLabs Scribe, cached; only the source ranges actually used on the timeline are billed) and lists indexed spoken segments, each starting as Keep. Clips with no speech are auto-marked Cut.
 2. **Analyze w/ Claude**: Claude reads the transcript and marks duplicate takes, false starts and filler as Cut (keeping the most complete pass of each beat). Long timelines are analyzed in overlapping chunks for reliability.
 3. **Review**: click a segment to expand; flip **Keep ⇄ Cut**, or **Protect** it so nothing ever cuts it. Overrides show a *Manual* badge. The list follows the playhead; clicking a segment's time seeks Premiere.
 4. Optional extras before applying:

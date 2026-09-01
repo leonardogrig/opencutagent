@@ -53,6 +53,19 @@ canvas size, fps, exact duration and background mode are in the system prompt an
   user's footage. Leave real transparency where the footage should show; strokes and text float
   over the video, so keep them big and high-contrast.
 
+## Frame-aware jobs ("Use frames")
+Some transparent jobs are FRAME-AWARE: the system prompt says so and the job folder has a
+`frames-map.json`. These draw ON the actual footage (circling buttons, underlining on-screen
+text), anchored in position and time to what is really on screen. The full workflow lives in the
+frames guide injected into your system prompt: Premiere's own frames of the sequence every
+`step` seconds in `public/frames/<jobId>/full/` (+ contact sheets in `sheets/`), the map's
+`changes`/`shots` analysis (a drawing lives inside one shot), cutouts via
+`node scripts/grab-frames.mjs`, a mandatory `anchors.json` checked by
+`node scripts/check-anchors.mjs` (the server re-runs it before rendering), and composite
+verification with `<DebugFrame>` (from `src/components`; it auto-hides in the final render).
+All frames are in CANVAS coordinates. Black or empty screens are free canvas; real content must
+be anchored to.
+
 ## Verify your work (cheap, do it before declaring done)
 - `npm run typecheck` (or `npx tsc --noEmit`) — must be clean.
 - Look at what you made when it matters: `npx remotion still <jobId> src/jobs/<jobId>/check.png

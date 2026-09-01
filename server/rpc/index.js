@@ -7,13 +7,13 @@
 import { readdir, stat, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { buildReview, markDecisions, applyReview, reconcile, reinsertTarget, requireReview, planEditMarkers, EDIT_MARKER_SENTINEL, buildTranscriptCues, formatSrt } from "../review.js";
-import { buildLevels, levelsForPanel, applySilenceRanges } from "../silences.js";
+import { buildLevels, levelsForPanel, applySilenceRanges, listMediaTracks } from "../silences.js";
 import { restoreUndo, hasUndo } from "../undo.js";
 import { liveEnv, setEnvKey } from "../config.js";
 import { readCloudConfig, writeCloudConfig, cloudUrl, cloudLinkStart, cloudLinkPoll, cloudSignOut, cloudMe } from "../cloud.js";
 import { askClaude, THRESHOLD_SCHEMA, thresholdSystem, thresholdPrompt, analyzeRetakes, listClaudeModels } from "../ai.js";
 import { readUsage, recordUsage } from "../usage.js";
-import { fmtDur } from "../tools/util.js";
+import { fmtDur, getTimeline } from "../tools/util.js";
 import { animHandlers } from "../animation/index.js";
 
 // Model/effort come from the panel dropdowns; fall back to .env, then sane defaults.
@@ -48,10 +48,28 @@ async function cancel(_params, _helpers, ctx) {
 /** Analyze timeline loudness for the Remove Silences tab (ffmpeg, no transcription). */
 async function analyzeLevels(params, helpers, ctx) {
   return cancellable(ctx, async () => {
-    const silence = await buildLevels(ctx, { clipId: params.clip_id, refresh: !!params.refresh }, helpers.progress);
+    const silence = await buildLevels(
+      ctx,
+      { clipId: params.clip_id, track: params.track, refresh: !!params.refresh },
+      helpers.progress
+    );
     helpers.progress(`Analyzed ${silence.clips.length} clip(s).`);
     return levelsForPanel(silence);
   });
+}
+
+/**
+ * The sequence's tracks that carry source media, for the panel's scan-track
+ * picker. One cheap host read: the picker must be populated BEFORE the first
+ * scan, so it can't wait for a levels payload.
+ */
+async function timelineTracks(params, helpers, ctx) {
+  const timeline = await getTimeline(ctx);
+  return {
+    sequence: timeline.sequence.name,
+    tracks: listMediaTracks(timeline),
+    current: (ctx.silence && ctx.silence.track) || null,
+  };
 }
 
 /** Apply the panel's computed silence ranges (remove / keep-spaces / mute). */
@@ -83,7 +101,7 @@ function reviewResult(review) {
  */
 async function loadSegments(params, helpers, ctx) {
   return cancellable(ctx, async () => {
-    const review = await buildReview(ctx, { clipId: params.clip_id, refresh: !!params.refresh, transcribeModel: params.transcribe_model, carryMarks: params.fresh !== true }, helpers.progress);
+    const review = await buildReview(ctx, { clipId: params.clip_id, refresh: !!params.refresh, transcribeModel: params.transcribe_model, track: params.track, segmentMode: params.segment_mode, carryMarks: params.fresh !== true }, helpers.progress);
     helpers.progress(`Found ${review.segments.length} segments.`);
     return reviewResult(review);
   });
@@ -99,7 +117,7 @@ async function autoLoadSegments(params, helpers, ctx) {
   if (ctx.panelOp) return { loaded: false, reason: "busy" };
   try {
     return await cancellable(ctx, async () => {
-      const review = await buildReview(ctx, { transcribeModel: params.transcribe_model, cacheOnly: true, carryMarks: true }, helpers.progress);
+      const review = await buildReview(ctx, { transcribeModel: params.transcribe_model, track: params.track, segmentMode: params.segment_mode, cacheOnly: true, carryMarks: true }, helpers.progress);
       return { loaded: true, ...reviewResult(review) };
     });
   } catch (e) {
@@ -328,7 +346,7 @@ async function aiThreshold(params, helpers, ctx) {
     let silence = ctx.silence;
     if (!silence || !silence.clips || !silence.clips.length) {
       helpers.progress("Scanning audio levels…");
-      silence = await buildLevels(ctx, { clipId: params.clip_id }, helpers.progress);
+      silence = await buildLevels(ctx, { clipId: params.clip_id, track: params.track }, helpers.progress);
     }
     if (token.aborted) throw new Error("Cancelled");
     helpers.progress("Claude is choosing a threshold…");
@@ -372,7 +390,7 @@ async function aiRetakes(params, helpers, ctx) {
     let review = ctx.review;
     if (!review || !review.segments || !review.segments.length) {
       helpers.progress("Transcribing the timeline…");
-      review = await buildReview(ctx, { clipId: params.clip_id, transcribeModel: params.transcribe_model }, helpers.progress);
+      review = await buildReview(ctx, { clipId: params.clip_id, transcribeModel: params.transcribe_model, track: params.track, segmentMode: params.segment_mode }, helpers.progress);
     }
     if (token.aborted) throw new Error("Cancelled");
     if (!review.segments.length) throw new Error("No segments to analyze. Load the timeline first.");
@@ -550,10 +568,12 @@ const ENV_SPECS = [
   { key: "EDITAGENT_TRANSCRIBE_PAD", def: "0.25", desc: "Seconds of audio context kept on each edge of a transcribed range so edge words aren't clipped." },
   { key: "EDITAGENT_REBUILD_MIN", def: "100", desc: "Ripple applies with at least this many cuts use the fast XML rebuild instead of razoring in place. 0 disables it." },
   { key: "EDITAGENT_ROUNDTRIP", def: "1", desc: "Fast applies round-trip Premiere's own XML so effects survive. Set 0 to use the bare rebuild (drops effects)." },
+  { key: "EDITAGENT_SEGMENT_WORDS", def: "24", desc: "Safety cap on words per segment when Generated segments is OFF (one segment per sentence; the cap only splits punctuation-less run-on speech)." },
   { key: "EDITAGENT_TRIM_EXCESS_PAD", def: "0.15", desc: "Seconds of breathing room kept around words when Remove excess trims non-speech air." },
   { key: "EDITAGENT_TRIM_EXCESS_MIN", def: "0.2", desc: "Non-speech air shorter than this many seconds is left alone by Remove excess." },
-  { key: "EDITAGENT_ANIM_TIMEOUT_MS", def: "1200000", desc: "Hard timeout for one animation chat turn, in milliseconds." },
   { key: "EDITAGENT_ANIM_RENDER_TIMEOUT_MS", def: "", desc: "Optional hard time limit for one animation render, in milliseconds. Empty = no limit (a render is only stopped if it stops producing frames)." },
+  { key: "EDITAGENT_ANIM_FRAME_STEP", def: "0.5", desc: "Use frames: seconds between the footage frames exported from the sequence for the animation agent (widened automatically on long selections)." },
+  { key: "EDITAGENT_ANIM_VERIFY_ROUNDS", def: "1", desc: "Use frames: how many automatic fix-up turns the agent gets when its drawings do not match the footage before the clip is rendered anyway. 0 = never send it back." },
   { key: "EDITAGENT_ANIM_TIMEOUT_MS", def: "", desc: "Optional hard time limit for one animation chat turn, in milliseconds. Empty = no limit (the agent is only stopped if it goes silent)." },
   { key: "EDITAGENT_ANIM_STALL_MS", def: "900000", desc: "How long the animation agent may produce nothing at all before it is treated as stuck and stopped, in milliseconds." },
   { key: "EDITAGENT_ANIM_RENDER_STALL_MS", def: "600000", desc: "How long a render may go without finishing a single frame before it is treated as stuck, in milliseconds." },
@@ -663,7 +683,7 @@ async function cloudAccount() {
   return cloudMe();
 }
 
-const HANDLERS = { ping, cancel, loadSegments, autoLoadSegments, applyDecisions, softApply, clearMarkers, exportTranscript, timelineMap, reinsertSegment, analyzeLevels, applySilences, aiThreshold, aiRetakes, undoLastApply, undoStatus, cacheInfo, clearCache, usageLog, aiModels, keyStatus, setApiKey, envList, setEnv, cloudStatus, cloudLink, cloudPoll, cloudSignOut: cloudSignOutRpc, cloudSetMode, cloudAccount, ...animHandlers };
+const HANDLERS = { ping, cancel, loadSegments, autoLoadSegments, applyDecisions, softApply, clearMarkers, exportTranscript, timelineMap, reinsertSegment, analyzeLevels, timelineTracks, applySilences, aiThreshold, aiRetakes, undoLastApply, undoStatus, cacheInfo, clearCache, usageLog, aiModels, keyStatus, setApiKey, envList, setEnv, cloudStatus, cloudLink, cloudPoll, cloudSignOut: cloudSignOutRpc, cloudSetMode, cloudAccount, ...animHandlers };
 
 export function createRpcDispatcher(ctx) {
   return async (method, params, helpers) => {

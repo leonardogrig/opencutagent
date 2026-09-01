@@ -1,7 +1,7 @@
 // Unit checks for clip-bounded retake segmentation + fragment classification.
 // Pure logic, synthetic words — no Premiere, no transcript cache needed.
 import { TICKS_PER_SECOND, sourceRangeToTimelineFrames } from "../transcription/timecode.js";
-import { groupIntoPhrases, sliceWordsToWindow } from "../transcription/segments.js";
+import { groupIntoPhrases, groupIntoCaptionChunks, sliceWordsToWindow } from "../transcription/segments.js";
 import { partitionClip, classifyFragments, reconcile, reinsertTarget, planEditMarkers, MARKER_COLORS, srtTimestamp, wrapCaption, buildTranscriptCues, formatSrt, dedupeStackedSegments, carryOverMarks } from "../review.js";
 import { planRetakeChunks } from "../ai.js";
 import { stderrListsAudio } from "../audio/probe.js";
@@ -403,6 +403,43 @@ check("wrapCaption: wraps past maxLen on word boundary", wrapCaption("aaaa bbbb 
   const barely = [cseg(3.5, 8)];
   carryOverMarks(oldSegs, barely);
   check("carry: sub-50% overlap carries nothing", barely[0].decision === "keep", barely[0]);
+}
+
+// --- groupIntoCaptionChunks: caption-style segmentation ("Generated segments" OFF) ---
+{
+  // One long uninterrupted take: two sentences then a run past the word cap.
+  const flow = [];
+  const say = (text, at) => flow.push(word(text, at, at + 0.2));
+  say("Hello", 0.0); say("there.", 0.3); // sentence 1 (2 words < minWords, must NOT break alone)
+  say("This", 0.6); say("is", 0.9); say("a", 1.2); say("test.", 1.5); // sentence 2 ends at 6 words total? no: chunk restarts
+  for (let i = 0; i < 20; i++) say("w" + i, 2.0 + i * 0.3); // 20 uncapped words, no punctuation
+
+  const chunks = groupIntoCaptionChunks(flow, { maxWords: 8, gapSec: 0.5 });
+  // One segment per sentence: "Hello there." (2 words, >= minWords 2) stands alone.
+  check("caption: one segment per sentence", chunks[0].text === "Hello there." && chunks[1].text === "This is a test.", [chunks[0] && chunks[0].text, chunks[1] && chunks[1].text]);
+  check("caption: word cap splits the run-on (8+8+4)", chunks.length === 5 && chunks[2].wordCount === 8 && chunks[3].wordCount === 8 && chunks[4].wordCount === 4, chunks.map((c) => c.wordCount));
+  check("caption: chunk times come from its own words", approx(chunks[2].start, 2.0) && approx(chunks[2].end, 2.0 + 7 * 0.3 + 0.2), [chunks[2].start, chunks[2].end]);
+  // A one-word "sentence" is below minWords and merges forward instead of standing alone.
+  const tiny = groupIntoCaptionChunks([word("Yes.", 0, 0.2), word("So", 0.4, 0.6), word("anyway.", 0.7, 0.9)], {});
+  check("caption: sub-minWords sentence merges forward", tiny.length === 1 && tiny[0].text === "Yes. So anyway.", tiny.map((c) => c.text));
+
+  // Pauses still break (same rule as phrase mode), and audio events don't count.
+  const paused = groupIntoCaptionChunks(WORDS, { maxWords: 8 });
+  check("caption: pause still breaks a chunk", paused.length >= 2 && paused[0].text.indexOf("has") > 0, paused.map((c) => c.text));
+
+  // A sentence ender mid-run breaks immediately once past minWords.
+  const s = [word("One", 0, 0.2), word("two", 0.3, 0.5), word("three!", 0.6, 0.8), word("Four", 1.0, 1.2)];
+  const sc = groupIntoCaptionChunks(s, { maxWords: 10 });
+  check("caption: ! breaks after minWords", sc.length === 2 && sc[0].text === "One two three!" && sc[1].text === "Four", sc.map((c) => c.text));
+
+  // Phrase mode is untouched: same input, no sentence/cap breaks.
+  const phFlow = groupIntoPhrases(flow, 0.5);
+  check("caption: groupIntoPhrases unchanged (1 phrase)", phFlow.length === 1, phFlow.length);
+
+  // partitionClip works identically on caption chunks (tiling contract holds).
+  const capParts = partitionClip(clip("V1.0", 0, 8.5, 0), chunks);
+  const tiled = capParts.every((p, i) => i === 0 || approx(capParts[i - 1].end, p.start));
+  check("caption: partitionClip tiles chunks with no gaps", capParts.length === 5 && tiled && approx(capParts[0].start, 0) && approx(capParts[4].end, 8.5), capParts.map((p) => [p.start, p.end]));
 }
 
 console.log(failures === 0 ? "\nAll retake-segment checks passed." : `\n${failures} retake-segment check(s) FAILED.`);

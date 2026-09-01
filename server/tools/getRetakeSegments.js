@@ -10,12 +10,14 @@ export default {
     type: "object",
     properties: {
       clip_id: { type: "string", description: 'Clip id (e.g. "V1.0") or "all" (default — every video clip with media).' },
+      track: { type: "string", description: 'Transcribe only this timeline track, usually an audio track like "A1". Default: every video track with media.' },
+      segment_mode: { type: "string", enum: ["clip", "words"], description: 'How to split segments. "clip" (default): phrases on pauses within each clip — best after silences are cut. "words": caption-style sentence/word chunks with exact timings — best on an uncut recording.' },
       refresh: { type: "boolean", description: "Re-transcribe even if cached (source changed)." },
     },
     additionalProperties: false,
   },
   async handler(args, ctx) {
-    const review = await buildReview(ctx, { clipId: args.clip_id, refresh: !!args.refresh });
+    const review = await buildReview(ctx, { clipId: args.clip_id, track: args.track, segmentMode: args.segment_mode, refresh: !!args.refresh });
     // Compact one-line-per-segment text keeps the response well under the MCP
     // output cap even for long recordings (a JSON array of objects blows past it).
     // Fragment tags tell you what was already pre-marked: ⟦cut⟧ word-empty

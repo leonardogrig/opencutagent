@@ -12,7 +12,20 @@ import {
   normalizeSizeOverride, fmtTokens, fmtElapsed, normalizeRawDuration, buildRawBrief, createRawJob,
   sequenceFrameSize, setRawLength,
 } from "../animation/jobs.js";
-import { listStyles, readStyleSkill, kitDir as animWorkspaceDir } from "../animation/kit.js";
+import { listStyles, readStyleSkill, readFramesSkill, kitDir as animWorkspaceDir, mergePreservedGuide, guideVersion } from "../animation/kit.js";
+import {
+  parseVideoSize, fitTransform, canvasMapFilter, frameName,
+  mergeFrameSpans, prepareFrameAssets, removeFrameAssets, v1FrameSpans,
+  planExportTimes, timecodesFor, verifyJobAnchors, verifyRounds, KIT_SCRIPTS_DIR,
+} from "../animation/frames.js";
+import { buildFilter } from "../../animation-kit/scripts/grab-frames.mjs";
+import {
+  changedBlocks, pixelChange, detectChanges, shotsFromChanges, blackSpans, pickFrames, nearestFrameIndex,
+  judgeAnchor, formatAnchorReport, clampRect, regionThumbSize, grayFrames, readTimeSec, countWords,
+} from "../../animation-kit/scripts/frame-analysis.mjs";
+import { parseAnchors, anchorSamples, runAnchorCheck } from "../../animation-kit/scripts/check-anchors.mjs";
+import { execFileSync } from "node:child_process";
+import { ffmpegBin } from "../paths.js";
 import { toolDetail, buildSystemAppend } from "../animation/chat.js";
 import { claudeSpawnEnv } from "../ai.js";
 import { liveEnv } from "../config.js";
@@ -365,6 +378,212 @@ check("raw system prompt tells the agent there is no transcript", /STANDALONE/.t
   check("transient: a wedged render (no progress) IS retried", isTransientRenderError("remotion render stopped reporting progress for 10 min and looked stuck, so it was stopped.") === true);
   check("transient: a real scene error is NOT retried", isTransientRenderError("remotion render failed (exit 2). ReferenceError: foo is not defined") === false);
   check("transient: empty input is safe", isTransientRenderError(undefined) === false);
+}
+
+/* ---------- frame-aware jobs ("Use frames") ---------- */
+{
+  // ffmpeg -i stderr parsing (media fallback): the codec tag (0x31637634) must never match.
+  const ffInfo = "  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637634), yuv420p(tv, bt709), 2560x1440 [SAR 1:1 DAR 16:9], 4570 kb/s, 30 fps\n  Stream #0:1[0x2](und): Audio: aac, 48000 Hz, stereo";
+  const size = parseVideoSize(ffInfo);
+  check("frames: video size parses past the codec tag", size && size.width === 2560 && size.height === 1440, size);
+  check("frames: audio-only stderr yields no size", parseVideoSize("  Stream #0:0: Audio: aac, 48000 Hz") === null, null);
+
+  const fitSame = fitTransform(1920, 1080, 3840, 2160);
+  check("frames: same-aspect fit scales with no letterbox", approx(fitSame.scale, 0.5) && fitSame.ox === 0 && fitSame.oy === 0, fitSame);
+  const fitPillar = fitTransform(1920, 1080, 1440, 1080);
+  check("frames: narrower source pillarboxes centered", approx(fitPillar.scale, 1) && fitPillar.ox === 240 && fitPillar.oy === 0, fitPillar);
+  check("frames: canvas map filter fits then pads", canvasMapFilter(1920, 1080) === "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2", canvasMapFilter(1920, 1080));
+
+  check("frames: names zero-pad and sort chronologically", frameName(3.2) === "t0003.20.png" && frameName(0) === "t0000.00.png" && frameName(9.5) < frameName(10), frameName(3.2));
+  check("frames: a .999 fraction carries into the next second", frameName(59.999) === "t0060.00.png", frameName(59.999));
+
+  const spans = mergeFrameSpans([
+    { relStart: 0, relEnd: 2, mediaPath: "/a.mp4", sourceInSec: 10 },
+    { relStart: 2, relEnd: 5, mediaPath: "/a.mp4", sourceInSec: 12 },      // contiguous in rel AND source -> merges
+    { relStart: 5, relEnd: 7, mediaPath: "/a.mp4", sourceInSec: 40 },      // source jumps (a cut) -> stays separate
+    { relStart: 7, relEnd: 8, mediaPath: "/b.mp4", sourceInSec: 45 },      // different media -> separate
+  ]);
+  check("frames: contiguous spans merge, cuts and media changes don't", spans.length === 3 && approx(spans[0].relEnd, 5) && approx(spans[1].sourceInSec, 40) && spans[2].mediaPath === "/b.mp4", spans);
+
+  // Fallback source = the V1 track's clips under the selection.
+  const clip = (over) => ({
+    name: "c", trackType: "video", trackIndex: 0, mediaPath: "/v1.mp4", speedIsNormal: true,
+    start: { seconds: 10 }, end: { seconds: 30 }, sourceIn: { seconds: 100 }, ...over,
+  });
+  const v1r = v1FrameSpans([
+    clip({}),
+    clip({ trackIndex: 1, mediaPath: "/v2-screen.mp4" }),
+    clip({ trackType: "audio", mediaPath: "/a.mp4" }),
+    clip({ name: "fast", start: { seconds: 30 }, end: { seconds: 40 }, speedIsNormal: false }),
+    clip({ mediaPath: null }),
+  ], { startSec: 20, endSec: 36 });
+  check("frames: source spans come from V1 only, trimmed to the range",
+    v1r.spans.length === 1 && approx(v1r.spans[0].relStart, 0) && approx(v1r.spans[0].relEnd, 10) && approx(v1r.spans[0].sourceInSec, 110) && v1r.spans[0].mediaPath === "/v1.mp4", v1r);
+  check("frames: an off-speed V1 clip is skipped with a warning", v1r.warnings.length === 1 && /speed/.test(v1r.warnings[0]), v1r.warnings);
+  check("frames: empty V1 in range yields no spans", v1FrameSpans([clip({ trackIndex: 2 })], { startSec: 0, endSec: 5 }).spans.length === 0, null);
+
+  // Export planning: Premiere's own frames every step, ruler timecodes for QE.
+  const p1 = planExportTimes(9.5, 0.5);
+  check("frames: export times walk the range every step and stay inside the end", p1.step === 0.5 && p1.times.length === 19 && p1.times[0] === 0 && p1.times[18] === 9, p1);
+  const p2 = planExportTimes(600, 0.5, 400);
+  check("frames: a long range widens the step to stay under the frame cap", p2.step > 0.5 && p2.times.length <= 400 && p2.times.length > 300, [p2.step, p2.times.length]);
+  check("frames: a zero-length range still exports its first frame", planExportTimes(0, 0.5).times.length === 1, planExportTimes(0, 0.5));
+  const tcs = timecodesFor([0, 3.1], { startSec: 21.6, fps: 30, dropFrame: false, zeroPointFrames: 0 });
+  check("frames: rel times become ruler timecodes + extension-less names (QE appends .png)", tcs[0].tc === "00:00:21:18" && tcs[1].tc === "00:00:24:21" && tcs[1].name === "t0003.10" && tcs[1].t === 3.1, tcs);
+  const tcDf = timecodesFor([0], { startSec: 60, fps: 29.97, dropFrame: true, zeroPointFrames: 107892 });
+  check("frames: drop-frame sequences get ';' timecodes including the zero point", /;/.test(tcDf[0].tc) && /^01:/.test(tcDf[0].tc), tcDf);
+  check("frames: verify rounds default to 1 and clamp", verifyRounds() >= 0 && verifyRounds() <= 3, verifyRounds());
+
+  // Change analysis on synthetic gray frames (32x18, 16x9 blocks of 2x2 px).
+  const W = 32, H = 18;
+  const flat = (v) => new Uint8Array(W * H).fill(v);
+  const half = () => { const a = flat(20); for (let y = 0; y < H; y++) for (let x = 0; x < W / 2; x++) a[y * W + x] = 200; return a; };
+  const cursor = () => { const a = flat(20); a[5 * W + 5] = 200; a[5 * W + 6] = 200; a[6 * W + 5] = 200; return a; };
+  check("frames: identical frames change no blocks", changedBlocks(flat(20), flat(20), W, H) === 0, null);
+  check("frames: half the screen swapped = half the blocks", approx(changedBlocks(flat(20), half(), W, H), 0.5), changedBlocks(flat(20), half(), W, H));
+  check("frames: a cursor-sized change stays under the minor threshold", changedBlocks(flat(20), cursor(), W, H) < 0.10, changedBlocks(flat(20), cursor(), W, H));
+  const pc = pixelChange(flat(20), half());
+  check("frames: pixel change reports the changed fraction + mean", approx(pc.frac, 0.5) && approx(pc.meanAbs, 90), pc);
+  const times = [0, 0.5, 1, 1.5, 2];
+  const ch = detectChanges([flat(20), flat(20), half(), half(), cursor()], times, W, H);
+  check("frames: screen changes are timed at the frame the new content first shows, major only when big", ch.length === 2 && ch[0].t === 1 && ch[0].kind === "major" && ch[1].t === 2 && ch[1].kind === "major", ch);
+  const shots = shotsFromChanges(times, ch, 2.5);
+  check("frames: shots are the stretches between major changes, with their duration", shots.length === 3 && shots[0].start === 0 && shots[0].end === 1 && shots[0].dur === 1 && shots[1].end === 2 && shots[2].end === 2.5 && shots[2].dur === 0.5, shots);
+  const bl = blackSpans([flat(5), flat(5), flat(100), flat(3)], [0, 0.5, 1, 1.5], 0.5);
+  check("frames: black spans merge adjacent black frames and cover each frame's step", bl.length === 2 && bl[0].start === 0 && bl[0].end === 1 && bl[1].start === 1.5 && bl[1].end === 2, bl);
+
+  const fr = [{ t: 0, file: "a" }, { t: 0.5, file: "b" }, { t: 1, file: "c" }, { t: 1.5, file: "d" }];
+  check("frames: nearest frame index", nearestFrameIndex(fr, 0.7) === 1 && nearestFrameIndex(fr, 9) === 3 && nearestFrameIndex([], 1) === -1, null);
+  check("frames: picking at the export density returns every frame inside the window", pickFrames(fr, 0.2, 1.1, 0.5).map((f) => f.t).join() === "0.5,1", pickFrames(fr, 0.2, 1.1, 0.5));
+  check("frames: a coarser pick walks ticks snapped to exported frames", pickFrames(fr, 0, 1.5, 1).map((f) => f.t).join() === "0,1", pickFrames(fr, 0, 1.5, 1));
+  check("frames: an empty window still yields the nearest frame", pickFrames(fr, 0.2, 0.3, 0.5).map((f) => f.t).join() === "0", pickFrames(fr, 0.2, 0.3, 0.5));
+
+  // The anchor judgement: is the target really there for the whole span?
+  const A = flat(50), B = flat(200);
+  const smallDiff = () => { const a = flat(50); for (let i = 0; i < Math.round(a.length * 0.06); i++) a[i] = 120; return a; };
+  const samp = (arr) => arr.map(([t, r]) => ({ t, region: r }));
+  const outl = judgeAnchor(samp([[1, A], [1.5, A], [2, A], [2.5, B], [3, B]]), { from: 1.5, to: 3, step: 0.5 });
+  check("frames: a target that disappears mid-span FAILS as 'outlives' at the change time", outl.verdict === "fail" && outl.outlives && outl.outlives.from === 2.5 && !outl.startsEarly && outl.before && outl.before.same, outl);
+  const early = judgeAnchor(samp([[1, B], [1.5, B], [2, A], [2.5, A], [3, A], [3.5, A]]), { from: 1.5, to: 3, step: 0.5 });
+  check("frames: a drawing that starts before its target FAILS as 'startsEarly'", early.verdict === "fail" && early.startsEarly && early.startsEarly.until === 1.5 && !early.outlives && early.after && early.after.same, early);
+  const okj = judgeAnchor(samp([[1, B], [1.5, A], [2, A], [2.5, A], [3, B]]), { from: 1.5, to: 2.5, step: 0.5 });
+  check("frames: a target present for the whole span is OK, and the context says when it appears/disappears", okj.verdict === "ok" && okj.before && !okj.before.same && okj.after && !okj.after.same, okj);
+  const warnj = judgeAnchor(samp([[1, A], [1.5, A], [2, smallDiff()]]), { from: 1, to: 2, step: 0.5 });
+  check("frames: a small change (cursor pass) is a WARN, not a fail", warnj.verdict === "warn" && warnj.changes.length === 1, warnj);
+  const motion = judgeAnchor(samp([[1, A], [1.5, B], [2, A]]), { from: 1, to: 2, step: 0.5, expectMotion: true });
+  check("frames: expectMotion reports changes but never fails", motion.verdict === "ok" && motion.changes.length === 2, motion);
+  // Time budget: text must be readable in the time the target is really there.
+  check("frames: read time = settle + per word + draw-in; a bare stroke needs half a second", approx(readTimeSec(0), 0.5) && approx(readTimeSec(4, 0.4), 2.0) && countWords("  your alert  or an email ") === 5 && countWords("") === 0, [readTimeSec(0), readTimeSec(4, 0.4)]);
+  const busy = judgeAnchor(samp([[8, B], [8.5, A], [9, B]]), { from: 8.55, to: 8.95, step: 0.5, words: 7 });
+  check("frames: seven words on a target visible for 0.4s FAILS as too busy", busy.verdict === "fail" && busy.tooBusy && busy.tooBusy.words === 7 && busy.visibleSec === 0.4 && /Drop the text/.test(busy.notes.join(" ")), busy);
+  const roomy = judgeAnchor(samp([[1, A], [1.5, A], [2, A], [2.5, A], [3, A]]), { from: 1, to: 3, step: 0.5, words: 3, drawIn: 0.3 });
+  check("frames: three words over two seconds is fine", roomy.verdict === "ok" && !roomy.tooBusy && roomy.neededSec === 1.65, roomy);
+  const shortened = judgeAnchor(samp([[1, A], [1.5, A], [2, A], [2.5, B], [3, B]]), { from: 1, to: 3, step: 0.5, words: 5 });
+  check("frames: the budget counts only the time the target is really there (outlives shortens it)", shortened.verdict === "fail" && shortened.outlives && shortened.tooBusy && shortened.visibleSec === 1.5, shortened);
+  const bare = judgeAnchor(samp([[8, B], [8.5, A], [9, B]]), { from: 8.55, to: 8.95, step: 0.5 });
+  check("frames: a bare stroke on a 0.4s target passes with a 'too brief' hint", bare.verdict === "ok" && /too brief/.test(bare.notes.join(" ")), bare);
+  const unk = judgeAnchor([], { from: 1, to: 2, step: 0.5 });
+  check("frames: no frame anywhere near the span = unknown", unk.verdict === "unknown", unk);
+  const flash = judgeAnchor(samp([[0.5, B], [1, A], [1.5, B]]), { from: 1.05, to: 1.45, step: 0.5, words: 3 });
+  check("frames: a span shorter than the frame step is judged on the nearest frame, and the budget still applies", flash.verdict === "fail" && flash.tooBusy && /shorter than the frame step/.test(flash.notes.join(" ")), flash);
+  const report = formatAnchorReport([{ id: "title", what: "the title", ...outl }, { id: "ok", ...okj }], { step: 0.5 });
+  check("frames: the report names the failure and the fix", /title \(the title\).*FAIL/.test(report) && /gone/.test(report) && /1 anchor\(s\) FAIL/.test(report) && /appears between/.test(report), report);
+  check("frames: rects clamp to the canvas", JSON.stringify(clampRect({ x: -5, y: 10.4, w: 3000, h: 20.2 }, 1920, 1080)) === '{"x":0,"y":10,"w":1920,"h":21}' && clampRect({ x: 2000, y: 0, w: 10, h: 10 }, 1920, 1080) === null, clampRect({ x: -5, y: 10.4, w: 3000, h: 20.2 }, 1920, 1080));
+  const rts = regionThumbSize({ x: 0, y: 0, w: 1000, h: 250 });
+  check("frames: region thumbs cap the width and keep the aspect", rts.w === 256 && rts.h === 64, rts);
+
+  // grab-frames: local cutouts of the exported frames.
+  const gmap = { canvas: { width: 1920, height: 1080 }, frameWidth: 1568, step: 0.5, frames: fr };
+  const full = buildFilter(gmap, {});
+  check("frames: full frames downscale and print a coordinate factor", full.vf === "scale=1568:-2" && approx(full.factor, 1.224, 0.001) && full.prefix === "", full);
+  check("frames: a frame at canvas width needs no filter", buildFilter({ ...gmap, frameWidth: 4000 }, {}).vf === null, null);
+  const crop = buildFilter(gmap, { crop: { x: 50, y: 60, w: 200, h: 100 } });
+  check("frames: crops are 1:1 canvas pixels", crop.vf === "crop=200:100:50:60" && crop.factor === 1 && crop.prefix === "crop-x50y60-", crop);
+
+  // check-anchors: manifest parsing + sampling window.
+  const pa = parseAnchors({ anchors: [
+    { id: "a", what: "x", rect: { x: 10, y: 10, w: 50, h: 20 }, from: 1, to: 2 },
+    { id: "bad-rect", rect: { x: 0, y: 0, w: 0, h: 5 }, from: 1, to: 2 },
+    { id: "bad-time", rect: { x: 0, y: 0, w: 5, h: 5 }, from: 2, to: 1 },
+  ] }, 1920, 1080);
+  check("frames: anchors.json validates rects and times", pa.anchors.length === 1 && pa.anchors[0].id === "a" && pa.errors.length === 2 && pa.anchors[0].words === 0, pa);
+  const pt = parseAnchors({ anchors: [{ id: "t", rect: { x: 0, y: 0, w: 5, h: 5 }, from: 0, to: 1, text: "your alert or an email", drawIn: "0.4" }, { id: "w", rect: { x: 0, y: 0, w: 5, h: 5 }, from: 0, to: 1, words: 2 }] }, 100, 100);
+  check("frames: anchors carry their text budget (text -> words, or a word count) and draw-in", pt.anchors[0].words === 5 && approx(pt.anchors[0].drawIn, 0.4) && pt.anchors[1].words === 2, pt.anchors);
+  check("frames: a bare array is accepted too", parseAnchors([{ id: "z", rect: { x: 0, y: 0, w: 5, h: 5 }, from: 0, to: 1 }], 100, 100).anchors.length === 1, null);
+  check("frames: samples span one step past both ends", anchorSamples(fr, 0.5, 1, 0.5).map((f) => f.t).join() === "0,0.5,1,1.5", anchorSamples(fr, 0.5, 1, 0.5));
+  check("frames: a span with no frames samples the nearest one", anchorSamples(fr, 5, 6, 0.5).length === 1, anchorSamples(fr, 5, 6, 0.5));
+
+  // Prompt + brief wiring.
+  const fjob = { id: "anim-f", fps: 30, width: 1920, height: 1080, durationInFrames: 300, background: "transparent", style: "excalidraw", seeFrames: true };
+  const fsys = buildSystemAppend(fjob, "S", "FRAMES GUIDE BODY");
+  check("frames: system prompt carries the frames guide + the anchor check", /FRAME-AWARE/.test(fsys) && fsys.includes("<frames-skill>") && fsys.includes("FRAMES GUIDE BODY") && /check-anchors/.test(fsys), null);
+  const plainSys = buildSystemAppend({ ...fjob, seeFrames: false }, "S", "FRAMES GUIDE BODY");
+  check("frames: a normal job gets no frames guide", !plainSys.includes("<frames-skill>") && !/FRAME-AWARE/.test(plainSys), null);
+  const fbrief = buildBrief(fjob, { selected: [{ index: 0, relStart: 0, relEnd: 10, text: "hi" }], transcriptLines: [] });
+  check("frames: brief points at frames-map.json", fbrief.includes("frames-map.json") && fbrief.includes("Screen frames"), null);
+  const plainBrief = buildBrief({ ...fjob, seeFrames: false }, { selected: [], transcriptLines: [] });
+  check("frames: a normal brief has no frames section", !plainBrief.includes("frames-map.json"), null);
+  const guide = readFileSync(join(KIT_SCRIPTS_DIR, "..", "frames", "SKILL.md"), "utf8");
+  check("frames: readFramesSkill returns a guide", /DebugFrame/.test(readFramesSkill()), null);
+  check("frames: the shipped frames guide is v3 with anchors, shots and the time budget", guideVersion(guide) >= 3 && /check-anchors/.test(guide) && /anchors\.json/.test(guide) && /shots/.test(guide) && /DebugFrame/.test(guide) && /0\.25s per word/.test(guide), null);
+
+  // Preserved guides upgrade by version but keep the workspace's Learnings Log.
+  const tmplGuide = "<!-- guide-version: 2 -->\n# Guide v2\nnew body\n\n## Learnings Log\n\nAppend here.\n";
+  const wsGuide = "# Guide v1\nold body\n\n## Learnings Log\n\nAppend here.\n- 2026-07-01 keep circles 12px padded\n";
+  const merged = mergePreservedGuide(tmplGuide, wsGuide);
+  check("frames: a newer guide replaces the body and carries the log entries over", merged && merged.includes("new body") && !merged.includes("old body") && merged.includes("- 2026-07-01 keep circles 12px padded"), merged);
+  check("frames: an equal-or-older template leaves the workspace guide alone", mergePreservedGuide(tmplGuide, merged) === null && mergePreservedGuide("# no version", wsGuide) === null, null);
+
+  // prepareFrameAssets is best-effort: no ctx + missing media still writes the map.
+  const fkit = mkdtempSync(join(tmpdir(), "oca-frames-"));
+  mkdirSync(join(fkit, "src", "jobs", "anim-f"), { recursive: true });
+  const prep = await prepareFrameAssets({ job: fjob, spans: [{ relStart: 0, relEnd: 5, mediaPath: join(fkit, "missing.mp4"), sourceInSec: 0 }], kitDirPath: fkit });
+  check("frames: missing media degrades to a warning, not a throw", prep.hasVideo === false && prep.source === "none" && prep.warnings.length >= 1, prep);
+  const mapOnDisk = JSON.parse(readFileSync(join(fkit, "src", "jobs", "anim-f", "frames-map.json"), "utf8"));
+  check("frames: frames-map.json v2 is written even with no frames", mapOnDisk.version === 2 && mapOnDisk.jobId === "anim-f" && mapOnDisk.frames.length === 0 && mapOnDisk.canvas.width === 1920 && mapOnDisk.step === 0.5, mapOnDisk);
+  check("frames: an empty job needs no anchor check", verifyJobAnchors(fjob, fkit).status === "none", verifyJobAnchors(fjob, fkit));
+
+  // End-to-end anchor check on synthetic PNG frames (needs ffmpeg; skipped without it).
+  let haveFf = false;
+  try { execFileSync(ffmpegBin(), ["-version"], { stdio: "ignore" }); haveFf = true; } catch { /* no ffmpeg on this box */ }
+  if (haveFf) {
+    const fullDir = join(fkit, "public", "frames", "anim-f", "full");
+    mkdirSync(fullDir, { recursive: true });
+    const framesOnDisk = [];
+    // 0..1.0s: a bright box (the "target") at (100,50,60,30); 1.5..2.5s: gone.
+    for (let i = 0; i < 6; i++) {
+      const t = i * 0.5;
+      const file = frameName(t);
+      const vf = t <= 1.0 ? "drawbox=100:50:60:30:color=white:t=fill" : "null";
+      execFileSync(ffmpegBin(), ["-hide_banner", "-nostdin", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=#202020:s=320x180", "-vf", vf, "-frames:v", "1", join(fullDir, file)], { stdio: "ignore" });
+      framesOnDisk.push({ t, file });
+    }
+    const gray = grayFrames(ffmpegBin(), framesOnDisk.map((f) => join(fullDir, f.file)), { w: 32, h: 18 });
+    check("frames: grayFrames decodes one buffer per PNG", gray.length === 6 && gray[0].length === 32 * 18 && gray[0][5 * 32 + 12] > 200 && gray[5][5 * 32 + 12] < 60, gray.map((g) => g[5 * 32 + 12]));
+    const region = grayFrames(ffmpegBin(), framesOnDisk.map((f) => join(fullDir, f.file)), { w: 60, h: 30, crop: { x: 100, y: 50, w: 60, h: 30 } });
+    check("frames: crops decode at the rect's own size", region.length === 6 && region[0].length === 60 * 30 && region[0][0] > 200 && region[4][0] < 60, null);
+    const map2 = { version: 2, jobId: "anim-f", source: "sequence", canvas: { width: 320, height: 180, fps: 30 }, step: 0.5, frames: framesOnDisk, changes: [], shots: [], black: [] };
+    writeFileSync(join(fkit, "src", "jobs", "anim-f", "frames-map.json"), JSON.stringify(map2));
+    check("frames: no anchors.json on a job with footage = missing", verifyJobAnchors(fjob, fkit).status === "missing", verifyJobAnchors(fjob, fkit));
+    writeFileSync(join(fkit, "src", "jobs", "anim-f", "anchors.json"), JSON.stringify({ anchors: [
+      { id: "box-late", what: "the box", rect: { x: 100, y: 50, w: 60, h: 30 }, from: 0.5, to: 2.0 },
+      { id: "box-ok", rect: { x: 100, y: 50, w: 60, h: 30 }, from: 0, to: 1.0 },
+      { id: "empty-ok", rect: { x: 200, y: 100, w: 40, h: 40 }, from: 0, to: 2.5 },
+    ] }));
+    const chk = runAnchorCheck({ kitDir: fkit, jobId: "anim-f", ffmpeg: ffmpegBin() });
+    const late = chk.results.find((r) => r.id === "box-late");
+    check("frames: end-to-end: the drawing that outlives its box FAILS at 1.5s", !chk.ok && chk.fails === 1 && late && late.verdict === "fail" && late.outlives && late.outlives.from === 1.5, chk.results.map((r) => [r.id, r.verdict]));
+    check("frames: end-to-end: drawings whose target holds are OK", chk.results.find((r) => r.id === "box-ok").verdict === "ok" && chk.results.find((r) => r.id === "empty-ok").verdict === "ok", null);
+    check("frames: end-to-end: a sheet is written per anchor + a report json", late.sheet && existsSync(join(fkit, "public", "frames", "anim-f", "check", "box-late.png")) && existsSync(join(fkit, "src", "jobs", "anim-f", "anchor-report.json")), late.sheet);
+    check("frames: verifyJobAnchors maps the check to a fail status with a report", verifyJobAnchors(fjob, fkit).status === "fail" && /box-late/.test(verifyJobAnchors(fjob, fkit).report), verifyJobAnchors(fjob, fkit));
+    writeFileSync(join(fkit, "src", "jobs", "anim-f", "anchors.json"), JSON.stringify({ anchors: [{ id: "box-ok", rect: { x: 100, y: 50, w: 60, h: 30 }, from: 0, to: 1.0 }] }));
+    check("frames: verifyJobAnchors is ok once the timing is fixed", verifyJobAnchors(fjob, fkit).status === "ok", verifyJobAnchors(fjob, fkit));
+  } else {
+    console.log("SKIP  frames: end-to-end anchor check (ffmpeg not found)");
+  }
+  removeFrameAssets("anim-f", fkit);
+  check("frames: discard cleanup removes the extracted frames", !existsSync(join(fkit, "public", "frames", "anim-f")), null);
+  rmSync(fkit, { recursive: true, force: true });
 }
 
 /* ---------- render parsing ---------- */

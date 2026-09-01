@@ -62,7 +62,7 @@ export function toolDetail(name, input = {}) {
  * stays so tool behavior is normal). Repeated on every turn — each turn is a
  * fresh spawn and appended prompts are per-invocation.
  */
-export function buildSystemAppend(job, styleSkill) {
+export function buildSystemAppend(job, styleSkill, framesSkill = "") {
   const durSec = (job.durationInFrames / job.fps).toFixed(2);
   const raw = !!job.raw;
   return [
@@ -80,6 +80,9 @@ export function buildSystemAppend(job, styleSkill) {
     `- Work ONLY inside src/jobs/${job.id}/ (Scene.tsx is yours; brief.md is the assignment; refs/ holds the user's reference images).`,
     `- Canvas ${job.width}x${job.height} @ ${job.fps} fps, duration ${job.durationInFrames} frames (${durSec}s) — FIXED, never change job.json or the manifest.`,
     `- Background: ${job.background === "transparent" ? "TRANSPARENT overlay (the render keeps alpha over the user's footage — use <Canvas transparent>)" : "solid dark canvas (b-roll that covers the footage — use <Canvas>)"}.`,
+    ...(job.seeFrames ? [
+      "- FRAME-AWARE: this overlay draws ON the user's footage. Anchor drawings to what is actually on screen and only while it is there; the frames guide below is authoritative for the workflow (frames-map.json with its change analysis, the exported frames + sheets, scripts/grab-frames.mjs, anchors.json + scripts/check-anchors.mjs, DebugFrame verification). The server re-runs check-anchors before rendering and sends failures back to you, so run it yourself first. Scale every annotation to the time its target is on screen: under ~1.5s = a bare border/underline/arrow and NO text; text only when there is time to read it (about 0.6s + 0.25s per word after it finishes drawing).",
+    ] : []),
     raw
       ? "- Read brief.md FIRST on the first message (it has the canvas facts; there is no transcript for this one). The user's message is the whole assignment."
       : "- Read brief.md FIRST on the first message (it has the narration with word timings and the full-video transcript).",
@@ -92,6 +95,13 @@ export function buildSystemAppend(job, styleSkill) {
     "- Stills for self-checking are fine: npx remotion still " + job.id + " src/jobs/" + job.id + "/check.png --frame=N (then view the PNG).",
     "- If you're only answering a question or the scene isn't ready, don't touch render.json.",
     "",
+    ...(job.seeFrames && framesSkill ? [
+      "The frames guide below is authoritative for how to see the footage and anchor to it:",
+      "<frames-skill>",
+      framesSkill,
+      "</frames-skill>",
+      "",
+    ] : []),
     "The style guide below is authoritative for how the animation should look:",
     "<style-skill>",
     styleSkill || "(style guide missing — default to a clean hand-drawn dark whiteboard look)",
@@ -105,7 +115,7 @@ export function buildSystemAppend(job, styleSkill) {
  *   {kind:"tool", name, detail}          a tool call started
  * Resolves {ok, text, sessionId, usage, durationMs, numTurns} when the turn ends.
  */
-export function runChatTurn({ kitDirPath, job, prompt, styleSkill = "", model, effort, token, onEvent = () => {} }) {
+export function runChatTurn({ kitDirPath, job, prompt, styleSkill = "", framesSkill = "", model, effort, token, onEvent = () => {} }) {
   return new Promise((resolve, reject) => {
     const [bin, ...prefixArgs] = resolveClaudeLaunch();
     const sessionId = job.sessionId || randomUUID();
@@ -122,7 +132,7 @@ export function runChatTurn({ kitDirPath, job, prompt, styleSkill = "", model, e
       // (seen live: the agent spawned a survey sub-agent + a wakeup on turn one).
       "--tools", "Bash,Read,Write,Edit,Glob,Grep",
       job.sessionId ? "--resume" : "--session-id", sessionId,
-      "--append-system-prompt", buildSystemAppend(job, styleSkill),
+      "--append-system-prompt", buildSystemAppend(job, styleSkill, framesSkill),
     ];
     if (model && model !== "latest") args.push("--model", model);
     if (effort) args.push("--effort", effort);

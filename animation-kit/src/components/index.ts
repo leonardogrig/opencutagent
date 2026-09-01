@@ -1,4 +1,5 @@
 export * from "./Canvas";
+export * from "./DebugFrame";
 export * from "./DotGrid";
 export * from "./SketchLayer";
 export * from "./NodeCard";

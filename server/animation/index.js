@@ -9,7 +9,7 @@
 // doesn't touch Premiere until the final placement host calls, which serialize
 // on the bridge like everything else.
 import { basename } from "node:path";
-import { ensureKit, kitDir, listStyles, readStyleSkill } from "./kit.js";
+import { ensureKit, kitDir, listStyles, readStyleSkill, readFramesSkill } from "./kit.js";
 import {
   createJob, createRawJob, discardJob, loadJobsFrom, readChat, appendChat, saveJob, snapshotScene,
   readRenderSignal, saveRefImage, animTrackIndex, fmtTokens, fmtElapsed, sequenceFrameSize,
@@ -17,6 +17,7 @@ import {
 } from "./jobs.js";
 import { runChatTurn } from "./chat.js";
 import { renderJob, renderScale } from "./render.js";
+import { verifyJobAnchors, verifyRounds } from "./frames.js";
 import { reconcile, requireReview } from "../review.js";
 import { callHostHealing, getTimeline, mmss, round3, fmtDur } from "../tools/util.js";
 import { recordUsage } from "../usage.js";
@@ -87,6 +88,7 @@ function jobSummary(job, ctx = null) {
     raw: !!job.raw,
     style: job.style,
     background: job.background,
+    seeFrames: !!job.seeFrames,
     trackIndex: job.trackIndex != null ? job.trackIndex : animTrackIndex(),
     fps: job.fps,
     width: job.width,
@@ -205,10 +207,79 @@ async function renderAndPlace(ctx, job, kitPath, signal, token, stats = null) {
       ? `Animation v${signal.version} placed on V${placeInfo.trackIndex + 1} at ${mmss(placeInfo.targetSeconds)}${stat}.`
       : `Animation v${signal.version} rendered${stat}, but Premiere didn't confirm it landed. Check the timeline.`) +
     (scaleWarning ? " " + scaleWarning : "") +
-    (placeInfo.warning ? " " + placeInfo.warning : "");
+    (placeInfo.warning ? " " + placeInfo.warning : "") +
+    (stats && stats.extraNote ? " " + stats.extraNote : "");
   appendChat(job, { role: "system", kind: "placed", text, targetSeconds: placeInfo.targetSeconds, trackIndex: placeInfo.trackIndex });
   pushEvent(ctx, job.id, { kind: "placed", version: signal.version, file: renderInfo.file, ok: placeInfo.ok, targetSeconds: placeInfo.targetSeconds, text });
   return { renderInfo, placeInfo, text };
+}
+
+/**
+ * The frame-check gate for "Use frames" jobs: run the anchor check the agent
+ * was told to run itself; while it FAILS and rounds remain, send the report
+ * back to the agent as an automatic message and let it fix the scene, then
+ * check again. Never blocks a render for good: after the last round the clip
+ * renders anyway and the placed notice says what is still off. Returns
+ * {status, note} where note is the sentence appended to the placed notice.
+ */
+async function verifyWithFixups(ctx, job, kitPath, { model, effort, token, onTokens = () => {} }) {
+  const status = (text) => pushEvent(ctx, job.id, { kind: "status", text });
+  const rounds = verifyRounds();
+  status("Checking the drawings against the footage…");
+  let result = verifyJobAnchors(job, kitPath);
+  let round = 0;
+  while (result.status === "fail" && round < rounds) {
+    if (token.aborted) throw new Error("Cancelled");
+    round++;
+    const what = result.fails ? `${result.fails} drawing(s) don't match the footage` : "the anchor list has problems";
+    appendChat(job, { role: "system", kind: "note", text: `Frame check: ${what}. Sending the agent back to fix them before rendering (round ${round} of ${rounds}).` });
+    pushEvent(ctx, job.id, { kind: "frameCheck", round, text: `Frame check: ${what}.` });
+    status("Fixing the drawings against the footage…");
+    const prompt = [
+      `[Automatic frame check, not a message from the user. Round ${round} of ${rounds}.]`,
+      "The anchored drawings below do not match the footage under them. Fix each one's timing and/or position (a drawing may only be visible while its target is on screen, inside one shot; start it after the target appears and end it before the screen changes), or mark expectMotion only if the target legitimately animates. Read the sheets the check wrote. Then re-run `node scripts/check-anchors.mjs " + job.id + "` until it reports no FAIL, and bump the version in render.json. Reply in one short sentence.",
+      "",
+      result.report,
+    ].join("\n");
+    const startedAt = Date.now();
+    let streamed = "";
+    const tools = [];
+    const turn = await runChatTurn({
+      kitDirPath: kitPath,
+      job,
+      prompt,
+      styleSkill: readStyleSkill(job.style),
+      framesSkill: readFramesSkill(),
+      model,
+      effort,
+      token,
+      onEvent: (ev) => {
+        if (ev.kind === "delta") streamed += ev.text;
+        else if (ev.kind === "tool") tools.push({ name: ev.name, detail: ev.detail });
+        pushEvent(ctx, job.id, ev);
+      },
+    });
+    job.sessionId = turn.sessionId;
+    appendChat(job, { role: "assistant", text: (turn.text && turn.text.trim()) || streamed, tools, hidden: true, auto: true });
+    snapshotScene(job, kitPath);
+    saveJob(job);
+    const inTok = (turn.usage && turn.usage.input_tokens) || 0;
+    const outTok = (turn.usage && turn.usage.output_tokens) || 0;
+    onTokens(inTok + outTok);
+    recordUsage({ type: "claude", purpose: "Animation frame fix-up", model: model || "latest", effort: effort || null, calls: 1, durationMs: Date.now() - startedAt, inputTokens: inTok, outputTokens: outTok, costUsd: 0 });
+    status("Checking the drawings against the footage…");
+    result = verifyJobAnchors(job, kitPath);
+  }
+  let note = null;
+  if (result.status === "fail") {
+    note = `Frame check: ${result.fails ? `${result.fails} drawing(s) may still not match the footage` : "the anchor list still has problems"} (details in the note above).`;
+    appendChat(job, { role: "system", kind: "note", text: `Frame check details:\n${result.report}` });
+  } else if (result.status === "missing") {
+    note = "The agent declared no anchors, so the frame check was skipped.";
+  } else if (result.status === "ok" && round) {
+    note = "Frame check passed after the fix.";
+  }
+  return { status: result.status, note };
 }
 
 /**
@@ -303,7 +374,7 @@ async function animCreate(params, helpers, ctx) {
     };
     const job = params.raw
       ? await createRawJob(ctx, { ...common, durationSec: params.durationSec }, kitPath)
-      : await createJob(ctx, { ...common, indexes: params.segments }, kitPath);
+      : await createJob(ctx, { ...common, indexes: params.segments, seeFrames: !!params.seeFrames, onProgress: helpers.progress, token }, kitPath);
     a.jobs.set(job.id, job);
     return { job: jobSummary(job, ctx), message: `Animation ${job.id} created (${fmtDur(job.durationInFrames / job.fps)}). Tell the agent what to build.` };
   });
@@ -351,6 +422,7 @@ async function animChat(params, _helpers, ctx) {
         job,
         prompt,
         styleSkill: readStyleSkill(job.style),
+        framesSkill: job.seeFrames ? readFramesSkill() : "",
         model: params.model,
         effort: params.effort,
         token,
@@ -388,7 +460,17 @@ async function animChat(params, _helpers, ctx) {
       let placedMsg = null;
       if (willRender) {
         if (token.aborted) throw new Error("Cancelled");
-        const done = await renderPlaceOrReport(ctx, job, kitPath, signal, token, { tokens, startedAt });
+        // Frame-aware: prove the anchored drawings against the footage first.
+        // A FAIL goes back to the agent (bounded rounds) before anything renders.
+        let finalSignal = signal;
+        let frameNote = null;
+        let extraTokens = 0;
+        if (job.seeFrames) {
+          const v = await verifyWithFixups(ctx, job, kitPath, { model: params.model, effort: params.effort, token, onTokens: (n) => { extraTokens += n; } });
+          frameNote = v.note;
+          finalSignal = readRenderSignal(job, kitPath) || signal;
+        }
+        const done = await renderPlaceOrReport(ctx, job, kitPath, finalSignal, token, { tokens: tokens + extraTokens, startedAt, extraNote: frameNote });
         placedMsg = done.text;
       }
 

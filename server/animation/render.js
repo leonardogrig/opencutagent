@@ -186,7 +186,11 @@ export async function renderJob({ kitDirPath, job, version, scale = 1, onProgres
   const cli = remotionCliEntry(kitDirPath);
   if (!existsSync(cli)) throw new Error("The animation workspace isn't installed yet (Remotion CLI missing). Create the animation again to set it up.");
 
-  const args = [cli, "render", job.id, tmpPath, "--timeout=120000", "--muted", "--image-format=png", "--overwrite"];
+  // { final: true } marks the DELIVERABLE render: the kit's DebugFrame (the
+  // footage frame a frame-aware agent composites under its stills to verify
+  // positioning) reads this input prop and renders nothing, so a leftover debug
+  // layer can never ship inside the placed clip. Agent stills don't pass it.
+  const args = [cli, "render", job.id, tmpPath, "--timeout=120000", "--muted", "--image-format=png", "--overwrite", '--props={"final":true}'];
   if (transparent) args.push("--codec=prores", "--prores-profile=4444", "--pixel-format=yuva444p10le");
   else args.push("--codec=h264", "--crf=14");
   if (Number.isFinite(scale) && scale > 0 && Math.abs(scale - 1) > 0.001) args.push(`--scale=${scale}`);

@@ -54,10 +54,37 @@ export function templateSignature() {
   return h.digest("hex");
 }
 
-// Workspace files never clobbered once they exist: the style skills carry a
-// user-grown Learnings Log the agent appends to — a template update must not
-// erase it. (Genuinely new template guidance still lands via new files.)
-const PRESERVE = [/^styles\/[^/]+\/SKILL\.md$/];
+// Workspace files never clobbered once they exist: the style skills and the
+// frames guide carry a user-grown Learnings Log the agent appends to — a
+// template update must not erase it. (Genuinely new template guidance still
+// lands via new files.)
+const PRESERVE = [/^styles\/[^/]+\/SKILL\.md$/, /^frames\/SKILL\.md$/];
+
+/** `<!-- guide-version: N -->` marker of a preserved guide (0 when absent). Pure. */
+export function guideVersion(text) {
+  const m = /<!--\s*guide-version:\s*(\d+)\s*-->/.exec(String(text || ""));
+  return m ? Number(m[1]) : 0;
+}
+
+/**
+ * Upgrade a preserved guide in place: when the template carries a higher
+ * guide-version than the workspace copy, the template body wins but the
+ * workspace's "## Learnings Log" section (everything from that heading on) is
+ * carried over. Returns the merged text, or null when nothing should change.
+ * Pure (unit-tested).
+ */
+export function mergePreservedGuide(templateText, workspaceText) {
+  if (guideVersion(templateText) <= guideVersion(workspaceText)) return null;
+  const logRe = /^## Learnings Log[\s\S]*$/m;
+  const oldLog = logRe.exec(workspaceText);
+  if (!oldLog) return templateText;
+  const newLog = logRe.exec(templateText);
+  if (!newLog) return templateText.replace(/\s*$/, "\n\n") + oldLog[0];
+  // Keep the template's heading + intro lines, append the workspace's entries.
+  const oldEntries = oldLog[0].split("\n").slice(1).filter((l) => /^\s*[-*]\s|^\s*\d{4}-\d{2}-\d{2}/.test(l));
+  if (!oldEntries.length) return templateText;
+  return templateText.replace(/\s*$/, "\n") + oldEntries.join("\n") + "\n";
+}
 
 // The generated jobs manifest: the template's empty copy must never overwrite a
 // workspace manifest that registers real jobs (regenerateManifest owns it).
@@ -109,7 +136,13 @@ export async function ensureKit({ onProgress = () => {}, token } = {}) {
     for (const f of files) {
       const dest = join(dir, f);
       if (GENERATED.has(f) && existsSync(dest)) continue;
-      if (PRESERVE.some((re) => re.test(f)) && existsSync(dest)) continue;
+      if (PRESERVE.some((re) => re.test(f)) && existsSync(dest)) {
+        // A guide with a newer `guide-version` in the template replaces the
+        // workspace copy but keeps its Learnings Log (the part users grow).
+        const merged = mergePreservedGuide(readFileSync(join(KIT_TEMPLATE_DIR, f), "utf8"), readFileSync(dest, "utf8"));
+        if (merged != null) { writeFileSync(dest, merged); copied++; }
+        continue;
+      }
       mkdirSync(dirname(dest), { recursive: true });
       copyFileSync(join(KIT_TEMPLATE_DIR, f), dest);
       copied++;
@@ -169,6 +202,20 @@ export function readStyleSkill(styleId) {
   for (const base of [kitDir(), KIT_TEMPLATE_DIR]) {
     try {
       const p = join(base, rel);
+      if (existsSync(p) && statSync(p).isFile()) return readFileSync(p, "utf8");
+    } catch { /* try the next location */ }
+  }
+  return "";
+}
+
+/**
+ * The frame-aware workflow guide injected into "Use frames" jobs, workspace
+ * copy first (it carries the growing Learnings Log), template otherwise.
+ */
+export function readFramesSkill() {
+  for (const base of [kitDir(), KIT_TEMPLATE_DIR]) {
+    try {
+      const p = join(base, "frames", "SKILL.md");
       if (existsSync(p) && statSync(p).isFile()) return readFileSync(p, "utf8");
     } catch { /* try the next location */ }
   }

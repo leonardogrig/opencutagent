@@ -41,11 +41,35 @@ function contentTokens(words) {
  * OR a speaker change. Returns [{ start, end, text, speaker }].
  */
 export function groupIntoPhrases(words, silenceThreshold = 0.5) {
+  return groupTokens(words, { gapSec: silenceThreshold });
+}
+
+// A sentence ends on . ! ? or … (closing quotes/brackets allowed after).
+const SENTENCE_END_RE = /[.!?…]["'”’)\]]*$/;
+
+/**
+ * Caption-style grouping (the Retakes "Generated segments OFF" mode): ONE
+ * SEGMENT PER SENTENCE. Breaks on pauses and speaker changes like
+ * groupIntoPhrases, but the primary break is sentence-ending punctuation
+ * (once the chunk holds >= minWords); maxWords is only a safety cap that
+ * splits punctuation-less run-on speech. Exact word timings per chunk.
+ */
+export function groupIntoCaptionChunks(words, opts = {}) {
+  return groupTokens(words, {
+    gapSec: opts.gapSec != null ? opts.gapSec : 0.5,
+    maxWords: opts.maxWords != null ? opts.maxWords : 24,
+    minWords: opts.minWords != null ? opts.minWords : 2,
+    sentenceBreak: true,
+  });
+}
+
+function groupTokens(words, { gapSec = 0.5, maxWords = 0, minWords = 3, sentenceBreak = false } = {}) {
   const toks = contentTokens(words);
   const phrases = [];
   let cur = [];
   let curStart = null;
   let curSpeaker = null;
+  let curWords = 0; // type==="word" tokens in cur (mirrors flush's wordCount)
   let prevEnd = null;
 
   const flush = () => {
@@ -70,17 +94,23 @@ export function groupIntoPhrases(words, silenceThreshold = 0.5) {
     cur = [];
     curStart = null;
     curSpeaker = null;
+    curWords = 0;
   };
 
   for (const t of toks) {
     if (curSpeaker != null && t.speaker != null && t.speaker !== curSpeaker) flush();
-    if (prevEnd != null && t.start - prevEnd >= silenceThreshold) flush();
+    if (prevEnd != null && t.start - prevEnd >= gapSec) flush();
     if (curStart == null) {
       curStart = t.start;
       curSpeaker = t.speaker;
     }
     cur.push(t);
+    if (t.type !== "audio_event") curWords += 1;
     prevEnd = t.end;
+    // Caption-mode breaks close AFTER the word that triggers them, so the
+    // punctuation (or the cap-hitting word) stays in its own chunk.
+    if (sentenceBreak && curWords >= minWords && t.type !== "audio_event" && SENTENCE_END_RE.test((t.text || "").trim())) flush();
+    else if (maxWords > 0 && curWords >= maxWords) flush();
   }
   flush();
   return phrases;

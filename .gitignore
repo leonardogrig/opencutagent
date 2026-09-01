@@ -14,3 +14,4 @@ server/test/eval/out/
 # macOS / Windows
 .DS_Store
 Thumbs.db
+design_samples/

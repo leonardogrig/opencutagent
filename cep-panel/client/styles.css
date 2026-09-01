@@ -458,6 +458,9 @@ input[type="checkbox"].switch:focus-visible { box-shadow: 0 0 0 3px var(--focus)
 .viewctl { display: flex; align-items: center; gap: var(--sp-1); flex: none; }
 .viewctl button { min-height: 24px; padding: 0 var(--sp-2); font-size: var(--fs-md); line-height: 1; }
 .viewctl .follow { font-size: var(--fs-sm); white-space: nowrap; margin-right: var(--sp-1); }
+/* Compact "<label> <select>" pair for a toolbar row (the silence scan-track picker). */
+.selctl { display: flex; align-items: center; gap: var(--sp-1); flex: none; font-size: var(--fs-sm); color: var(--text-secondary); white-space: nowrap; margin-right: var(--sp-1); }
+.selctl select { min-width: 74px; min-height: 24px; padding: 0 var(--sp-1); font-size: var(--fs-sm); }
 .sil-scroll { flex: 1; overflow-y: auto; padding: var(--sp-1) var(--sp-3) var(--sp-3); }
 
 .viz-wrap { position: relative; background: var(--viz-bg); border: 1px solid var(--border-default); border-radius: var(--r-md); overflow: hidden; }
@@ -602,8 +605,8 @@ a.calc-ai.busy::before { content: ""; width: 11px; height: 11px; flex: none; bor
 .segments { flex: 1; overflow-y: auto; border-top: 1px solid var(--border-subtle); }
 
 /* Status text + Follow toggle share one row (status truncates first). */
-.statusrow { display: flex; align-items: center; gap: var(--sp-3); padding: 0 var(--sp-3) var(--sp-2); flex: none; }
-.statusrow .statusbar { flex: 1; min-width: 0; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.statusrow { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2) var(--sp-3); padding: 0 var(--sp-3) var(--sp-2); flex: none; }
+.statusrow .statusbar { flex: 1; min-width: 120px; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .statusrow .chk { font-size: var(--fs-sm); white-space: nowrap; flex: none; }
 
 .seg { border-bottom: 1px solid var(--border-subtle); }
@@ -785,6 +788,7 @@ button.reinsert:hover:not(:disabled) { background: var(--accent-hover); border-c
 .anim-msg.assistant .anim-bubble { background: var(--surface-2); border: 1px solid var(--border-subtle); border-bottom-left-radius: var(--r-sm); }
 .anim-msg.system { align-self: center; text-align: center; color: var(--text-tertiary); font-size: var(--fs-sm); max-width: 100%; }
 .anim-msg.system.err { color: var(--danger-text); }
+.anim-msg.system.note { text-align: left; align-self: stretch; white-space: pre-wrap; font-family: var(--font-mono, monospace); font-size: var(--fs-xs, 11px); }
 /* "Placed on V2 at 0:41" notices seek the playhead on click */
 .anim-msg.system.placed { color: var(--success-text); cursor: pointer; }
 .anim-msg.system.placed:hover span { text-decoration: underline; }

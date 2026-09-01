@@ -1076,6 +1076,49 @@ $.editagent = (function () {
     return { ok: !!found, targetSeconds: targetSec, trackIndex: vIdx, placed: found };
   }
 
+  // Export sequence frames as PNGs via QE (the only scripting path that renders
+  // the composited sequence: transforms, crops, nested clips, all tracks).
+  // Used by the Animation tab's "Use frames" so the agent sees EXACTLY what
+  // plays under its overlay. The animation's own track is hidden meanwhile so
+  // a previous version never appears in its own reference frames.
+  // p = { items: [{tc: "00:00:24:21", name: "t0003.10"}], dir, hideTrack }
+  // QE appends ".png" to the name itself. Timecodes are ruler timecodes in the
+  // sequence's display format (drop-frame uses ';').
+  function exportSequenceFrames(p) {
+    var seq = requireSeq();
+    if (!p || !p.dir || !p.items || !p.items.length) throw new Error("exportSequenceFrames: missing dir/items");
+    app.enableQE();
+    var qs = qe.project.getActiveSequence();
+    if (!qs || typeof qs.exportFramePNG !== "function") {
+      throw new Error("This Premiere build cannot export sequence frames (QE exportFramePNG is unavailable).");
+    }
+    var folder = new Folder(p.dir);
+    if (!folder.exists) folder.create();
+    var track = null, wasMuted = false;
+    if (p.hideTrack != null && p.hideTrack >= 0 && p.hideTrack < seq.videoTracks.numTracks) {
+      track = seq.videoTracks[p.hideTrack];
+      try {
+        wasMuted = !!track.isMuted();
+        if (!wasMuted) track.setMute(1);
+      } catch (e0) { track = null; }
+    }
+    var written = [], errors = [], i;
+    try {
+      for (i = 0; i < p.items.length; i++) {
+        var it = p.items[i];
+        try {
+          qs.exportFramePNG(String(it.tc), p.dir + "/" + it.name);
+          written.push(it.name);
+        } catch (e1) {
+          errors.push(String(it.tc) + ": " + String(e1 && e1.message ? e1.message : e1));
+        }
+      }
+    } finally {
+      if (track && !wasMuted) { try { track.setMute(0); } catch (e2) {} }
+    }
+    return { written: written, errors: errors, hidden: !!track };
+  }
+
   function runScript(p) {
     var r = eval(p.jsx); // escape hatch — runs arbitrary ExtendScript by design
     return r === undefined ? null : r;
@@ -1101,6 +1144,7 @@ $.editagent = (function () {
     getProjectDir: getProjectDir,
     importFootage: importFootage,
     placeFootage: placeFootage,
+    exportSequenceFrames: exportSequenceFrames,
     runScript: runScript
   };
 
