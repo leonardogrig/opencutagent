@@ -64,6 +64,9 @@
     return Math.floor(m / 60) + "h " + pad2(m % 60) + "m";
   }
   function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+  // localStorage with a fallback (CEP can throw on storage access).
+  function loadPref(key, def) { try { var v = window.localStorage.getItem(key); return v == null ? def : v; } catch (e) { return def; } }
+  function savePref(key, val) { try { window.localStorage.setItem(key, val); } catch (e) {} }
   function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
   function $(id) { return document.getElementById(id); }
 
@@ -251,6 +254,7 @@
       Retake.autoLoad();
       // The sequence may have changed while we were offline — re-read its tracks.
       Silence.refreshTracks();
+      Retake.refreshTracks();
       if (activeTab === "retake") Retake.onShow(); // resume playhead sync after a reconnect
       else if (activeTab === "silence") Silence.onShow();
       else if (activeTab === "anim") Anim.onShow();
@@ -1915,6 +1919,10 @@
       mapRefreshAt: 0, mapRefreshing: false,
       // timeline-change detection (cheap signature piggybacked on the playhead poll):
       pendingSig: null, sigStable: 0, loadedSig: null,
+      // transcription scope + segmentation (sent on every load/resync):
+      track: loadPref("editagent.retake.track", ""),           // "" = auto, else "A1"...
+      genSegs: loadPref("editagent.retake.generated", "1") !== "0", // ON = clip-tiled (default), OFF = caption chunks
+      tracks: [], tracksFetched: false,
     };
     var POLL_MS = 300, MAP_LAZY_MS = 4000;
     // The load button's two labels. Constants because the label is also READ back
@@ -1927,7 +1935,7 @@
     var el = {};
 
     function cache() {
-      ["loadBtn", "aiBtn", "retakeStopBtn", "statusbar", "segments", "removeGaps", "trimExcess", "applyBtn", "softApplyBtn", "clearMarkersBtn", "exportBtn", "undoBtn", "startOverBtn", "summary", "followToggle"].forEach(function (id) { el[id] = $(id); });
+      ["loadBtn", "aiBtn", "retakeStopBtn", "statusbar", "segments", "removeGaps", "trimExcess", "applyBtn", "softApplyBtn", "clearMarkersBtn", "exportBtn", "undoBtn", "startOverBtn", "summary", "followToggle", "retTrack", "segGen"].forEach(function (id) { el[id] = $(id); });
     }
     function loadFollow() { try { state.follow = window.localStorage.getItem("editagent.retake.follow") !== "0"; } catch (e) { state.follow = true; } }
     function persistFollow() { try { window.localStorage.setItem("editagent.retake.follow", state.follow ? "1" : "0"); } catch (e) {} }
@@ -1952,10 +1960,18 @@
     }
     // Silent, cost-free load: the server builds segments only if the transcript
     // cache fully covers the current timeline (never bills, needs no key). Runs
+    // Params every load/resync shares: model + the Track pick + segmentation
+    // mode ("clip" = Generated segments ON, "words" = caption-style chunks) —
+    // an auto-resync MUST use the same mode or reconnecting flips the list.
+    function loadParams() {
+      var p = { transcribe_model: AI.sttModel(), segment_mode: state.genSegs ? "clip" : "words" };
+      if (state.track) p.track = state.track;
+      return p;
+    }
     // on connect and when the tab opens, so a known project appears by itself.
     function autoLoad() {
       if (!connected() || state.busy || state.loaded) return;
-      callServer("autoLoadSegments", { transcribe_model: AI.sttModel() }).then(
+      callServer("autoLoadSegments", loadParams()).then(
         function (res) { if (res && res.loaded) adoptReview(res, "from cache"); },
         function () { /* silent: the Load button remains the explicit path */ }
       );
@@ -1963,7 +1979,8 @@
     function loadSegments(fresh) {
       setBusy(true); setStatus("Loading…"); setLoading(el.loadBtn, true, "Loading…");
       el.segments.innerHTML = skeletonRows();
-      callServer("loadSegments", { transcribe_model: AI.sttModel(), fresh: fresh === true }, function (m) { setStatus(m); }).then(
+      var p = loadParams(); p.fresh = fresh === true;
+      callServer("loadSegments", p, function (m) { setStatus(m); }).then(
         function (res) {
           setLoading(el.loadBtn, false, RELOAD_LABEL); setBusy(false);
           adoptReview(res, "");
@@ -1990,7 +2007,12 @@
       // footage really needs the key, the server's error opens the key modal.)
       if (!connected()) { setStatus("Not connected.", true); return; }
       setBusy(true); setStatus("Claude is analyzing the retakes…"); setLoading(el.aiBtn, true, "Analyzing…");
-      callServer("aiRetakes", AI.params(), function (m) { setStatus(m); }).then(
+      // Carry the transcription scope: if this analyze has to load first, it
+      // must build the SAME list the Transcribe button would.
+      var aiP = AI.params();
+      aiP.segment_mode = state.genSegs ? "clip" : "words";
+      if (state.track) aiP.track = state.track;
+      callServer("aiRetakes", aiP, function (m) { setStatus(m); }).then(
         function (res) {
           setLoading(el.aiBtn, false, "Analyze w/ Claude"); setBusy(false);
           // The Keep/Cut marks themselves arrive via the reviewUpdate push (markDecisions).
@@ -2196,7 +2218,7 @@
     function resync() {
       if (!connected() || state.busy) return;
       setStatus("Timeline changed. Updating…");
-      callServer("autoLoadSegments", { transcribe_model: AI.sttModel() }).then(
+      callServer("autoLoadSegments", loadParams()).then(
         function (res) {
           if (res && res.loaded) adoptReview(res, "(timeline changed)");
           else { setStatus("Timeline changed. Click Reload to transcribe the new parts."); refreshMap(true); }
@@ -2206,7 +2228,7 @@
     }
     function startPoll() { if (state.pollTimer) clearInterval(state.pollTimer); state.pollTimer = setInterval(pollTick, POLL_MS); }
     function stopPoll() { if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; } }
-    function onShow() { if (state.loaded) refreshMap(true); else autoLoad(); startPoll(); }
+    function onShow() { fetchTracks(false); if (state.loaded) refreshMap(true); else autoLoad(); startPoll(); }
     function onHide() {
       stopPoll();
       state.currentIndex = null;
@@ -2430,6 +2452,59 @@
         el.followToggle.checked = state.follow;
         el.followToggle.addEventListener("change", function () { state.follow = el.followToggle.checked; persistFollow(); });
       }
+      renderTracks();
+      if (el.retTrack) {
+        el.retTrack.addEventListener("change", function () {
+          state.track = el.retTrack.value || "";
+          savePref("editagent.retake.track", state.track);
+          rebuildFromCache("Track changed.");
+        });
+      }
+      if (el.segGen) {
+        el.segGen.checked = state.genSegs;
+        el.segGen.addEventListener("change", function () {
+          state.genSegs = el.segGen.checked;
+          savePref("editagent.retake.generated", state.genSegs ? "1" : "0");
+          rebuildFromCache(state.genSegs ? "Rebuilding timeline segments." : "Rebuilding caption-style segments.");
+        });
+      }
+    }
+
+    /* ----- transcription scope controls (track picker + segment mode) ----- */
+    function renderTracks() {
+      if (!el.retTrack) return;
+      var html = '<option value="">Auto</option>', i, t, found = false;
+      for (i = 0; i < state.tracks.length; i++) {
+        t = state.tracks[i];
+        if (t.track === state.track) found = true;
+        html += '<option value="' + esc(t.track) + '">' + esc(t.track) + " (" + t.withMedia + ")</option>";
+      }
+      if (state.track && !found) html += '<option value="' + esc(state.track) + '">' + esc(state.track) + "</option>";
+      el.retTrack.innerHTML = html;
+      el.retTrack.value = state.track || "";
+    }
+    function fetchTracks(force) {
+      if (!connected() || (state.tracksFetched && !force)) return;
+      state.tracksFetched = true;
+      callServer("timelineTracks", {}).then(
+        function (res) { state.tracks = (res && res.tracks) || []; renderTracks(); },
+        function () { state.tracksFetched = false; }
+      );
+    }
+    // A scope change re-segments from the cached transcript (free, marks carried
+    // over). If the cache doesn't cover the new scope, say so — Transcribe stays
+    // the explicit paid path, a toggle must never bill on its own.
+    function rebuildFromCache(prefix) {
+      if (!state.loaded) return; // nothing shown yet — the pick applies on the next Transcribe
+      if (!connected() || state.busy) { setStatus(prefix + " Applies on the next Transcribe."); return; }
+      setStatus(prefix + " Updating…");
+      callServer("autoLoadSegments", loadParams()).then(
+        function (res) {
+          if (res && res.loaded) adoptReview(res, "");
+          else setStatus(prefix + " Click " + RELOAD_LABEL + " to transcribe this scope (not cached yet).");
+        },
+        function () { setStatus(prefix + " Click " + RELOAD_LABEL + " to transcribe this scope.", true); }
+      );
     }
 
     // setMap is exposed for browser QA (inject a fake reconcile map alongside
@@ -2439,6 +2514,7 @@
     return {
       wire: wire, updateButtons: updateButtons, applyReviewUpdate: applyReviewUpdate, setMap: setMap,
       markUndoable: markUndoable, clearUndoable: clearUndoable, onShow: onShow, onHide: onHide, refreshMap: refreshMap,
+      refreshTracks: function () { fetchTracks(true); },
       autoLoad: autoLoad,
       segments: function () { return state.segments; },
       liveMap: function () { return state.liveMap; },

@@ -605,8 +605,8 @@ a.calc-ai.busy::before { content: ""; width: 11px; height: 11px; flex: none; bor
 .segments { flex: 1; overflow-y: auto; border-top: 1px solid var(--border-subtle); }
 
 /* Status text + Follow toggle share one row (status truncates first). */
-.statusrow { display: flex; align-items: center; gap: var(--sp-3); padding: 0 var(--sp-3) var(--sp-2); flex: none; }
-.statusrow .statusbar { flex: 1; min-width: 0; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.statusrow { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2) var(--sp-3); padding: 0 var(--sp-3) var(--sp-2); flex: none; }
+.statusrow .statusbar { flex: 1; min-width: 120px; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .statusrow .chk { font-size: var(--fs-sm); white-space: nowrap; flex: none; }
 
 .seg { border-bottom: 1px solid var(--border-subtle); }

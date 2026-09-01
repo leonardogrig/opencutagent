@@ -5,10 +5,10 @@ import { getTimeline, round3, isAborted, fmtDur } from "./tools/util.js";
 import { hasAudioStream } from "./audio/probe.js";
 import { liveEnv } from "./config.js";
 import { transcribeSourceRanges } from "./transcription/transcribe.js";
-import { groupIntoPhrases, sliceWordsToWindow } from "./transcription/segments.js";
+import { groupIntoPhrases, groupIntoCaptionChunks, sliceWordsToWindow } from "./transcription/segments.js";
 import { sourceRangeToTimelineFrames } from "./transcription/timecode.js";
 import { captureUndo } from "./undo.js";
-import { applyRangesBatched } from "./silences.js";
+import { applyRangesBatched, selectClips } from "./silences.js";
 
 // A clip is split into phrases on an internal pause >= this (sub-clip false
 // starts the silence pass didn't separate still get their own segment).
@@ -90,16 +90,17 @@ export async function buildReview(ctx, opts = {}, onProgress = () => {}) {
   const timeline = await getTimeline(ctx);
   const seq = timeline.sequence;
 
-  let clips;
-  if (opts.clipId && opts.clipId !== "all") {
-    const c = timeline.clips.find((x) => x.id === opts.clipId);
-    if (!c) throw new Error(`No clip "${opts.clipId}". Call ppro_get_timeline_state for ids.`);
-    clips = [c];
-  } else {
-    clips = timeline.clips.filter((c) => c.hasMedia && c.trackType === "video");
-    if (clips.length === 0) clips = timeline.clips.filter((c) => c.hasMedia);
-  }
+  // Same clip policy as the silence tab: video clips with media by default,
+  // an explicit clip id, or one track (the Retakes track picker sends "A1"...).
+  const clips = selectClips(timeline, opts.clipId, opts.track);
   if (clips.length === 0) throw new Error("No clips with source media on the timeline.");
+
+  // Segmentation mode: "clip" (default) phrases on pauses within each clip —
+  // best after silences/cuts shaped the timeline. "words" chunks caption-style
+  // (sentence enders + a word cap) so an UNCUT recording still yields readable
+  // sentence-sized segments with exact timings.
+  const captionMode = opts.segmentMode === "words";
+  const maxWords = Math.max(4, Number(liveEnv("EDITAGENT_SEGMENT_WORDS")) || 14);
 
   const segments = [];
   const skipped = [];
@@ -135,7 +136,9 @@ export async function buildReview(ctx, opts = {}, onProgress = () => {}) {
     // Slice the source words to THIS clip's window, then phrase within the clip
     // so a segment never spans a cut the silence pass already made.
     const clipWords = sliceWordsToWindow(wordsByMedia.get(clip.mediaPath), clip.sourceIn.seconds, clip.sourceOut.seconds);
-    const phrases = groupIntoPhrases(clipWords, PHRASE_GAP_SEC);
+    const phrases = captionMode
+      ? groupIntoCaptionChunks(clipWords, { maxWords, gapSec: PHRASE_GAP_SEC })
+      : groupIntoPhrases(clipWords, PHRASE_GAP_SEC);
     for (const part of partitionClip(clip, phrases)) {
       const r = sourceRangeToTimelineFrames(part.start, part.end, clip, seq.timebase);
       if (!r || r.endFrame - r.startFrame < 1) continue;
@@ -187,7 +190,7 @@ export async function buildReview(ctx, opts = {}, onProgress = () => {}) {
     carryOverMarks(ctx.review.segments, deduped);
   }
 
-  ctx.review = { sequence: seq.name, frameRate: seq.frameRate, dropFrame: seq.dropFrame, segments: deduped, skipped, fragments };
+  ctx.review = { sequence: seq.name, frameRate: seq.frameRate, dropFrame: seq.dropFrame, segments: deduped, skipped, fragments, segmentMode: captionMode ? "words" : "clip", track: opts.track && opts.track !== "auto" ? String(opts.track).toUpperCase() : null };
   return ctx.review;
 }
 

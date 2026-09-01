@@ -366,6 +366,15 @@
         </div>
         <div class="statusrow">
           <div id="statusbar" class="statusbar"></div>
+          <label class="selctl" id="retTrackWrap" data-tip="Which track's audio is transcribed. Pick the one your voice is on when the timeline stacks music, b-roll or silent graphics.">
+            <span>Track</span>
+            <select id="retTrack">
+              <option value="">Auto</option>
+            </select>
+          </label>
+          <label class="chk follow" data-tip="ON: segments follow your timeline's clips and pauses — best after Remove Silences shaped the edit. OFF: caption-style segments (a sentence or ~14 words each, like YouTube subtitles) with exact timings — works great on an uncut recording, no silence pass needed.">
+            <input type="checkbox" id="segGen" class="switch" role="switch" checked /> Generated segments
+          </label>
           <label class="chk follow" data-tip="Highlights and scrolls to the segment under Premiere's playhead as you scrub. Click a segment's time to jump the playhead there.">
             <input type="checkbox" id="followToggle" class="switch" role="switch" checked /> Follow playhead
           </label>

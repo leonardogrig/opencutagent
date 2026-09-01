@@ -124,6 +124,14 @@ primary buttons keep crisp dark labels (white-on-Ember is only ~3.1:1).
   only, this being a loudness scan). Persisted at `editagent.silence.track`; changing it
   rescans immediately when levels are already loaded. It scopes the MEASUREMENT
   only: cuts still ripple every track, so picture and sound stay in sync.
+- **Retakes transcription scope** — the `.statusrow` carries the same `.selctl`
+  Track picker (`#retTrack`, persisted `editagent.retake.track`) plus a
+  **Generated segments** switch (`#segGen`, persisted `editagent.retake.generated`,
+  default ON): ON = clip/pause-tiled segments (best after Remove Silences shaped
+  the edit), OFF = caption-style sentence/word chunks (`segment_mode:"words"`,
+  ~14 words max, breaks at . ! ? — like YouTube subtitles), so an UNCUT recording
+  still yields readable segments. Changing either control re-segments from the
+  cached transcript (free, marks carried over) and never bills on its own.
 - **Layout compaction** — Remove Silences has ONE toolbar row (`.sil-bar`:
   Scan/Rescan + truncating status + `.viewctl` track picker/Follow/zoom); the legend keeps
   swatches + a "drag to pan · scroll to zoom" hint. The threshold block is a
