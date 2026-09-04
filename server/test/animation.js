@@ -9,7 +9,7 @@ import {
   validateSelection, manifestSource, sceneScaffold, buildBrief, renderFps, newJobId,
   regenerateManifest, readRenderSignal, saveRefImage, saveJob, loadJobsFrom, readChat, appendChat,
   jobsRootFor, animTrackIndex, discardJob, jobTitle, clampTrackIndex,
-  normalizeSizeOverride, fmtTokens, fmtElapsed, normalizeRawDuration, buildRawBrief, createRawJob,
+  normalizeSizeOverride, fmtTokens, fmtElapsed, normalizeRawDuration, buildRawBrief, createRawJob, buildWordsJson,
   sequenceFrameSize, setRawLength,
 } from "../animation/jobs.js";
 import { listStyles, readStyleSkill, readFramesSkill, kitDir as animWorkspaceDir, mergePreservedGuide, guideVersion, KIT_TEMPLATE_DIR } from "../animation/kit.js";
@@ -177,6 +177,29 @@ if (existsSync(join(KIT_TEMPLATE_DIR, "styles", "n8n-brand"))) { // private styl
   check("n8n-brand theme carries the signature pink + five modes", /#FF91AC/.test(theme) && ["neutralLight", "neutralDark", "maker", "pinkLight", "pinkDark"].every((m) => theme.includes(m + ":")), null);
   check("scaffold points at the n8n-brand package", sceneScaffold({ ...job, style: "n8n-brand" }, { styleHasSrc: true }).includes('"../../../styles/n8n-brand/src"'), null);
 }
+// Leo pixel presenter: a talking-character style, lip sync fed by words.json
+check("leo style is registered (not default, ships src)", styles.some((s) => s.id === "leo" && !s.default && !s.custom), styles);
+{
+  const skill = readStyleSkill("leo");
+  check("leo skill teaches words.json lip sync + its components + log", /words\.json/.test(skill) && /LeoCorner/.test(skill) && /PixelPanel/.test(skill) && /timeOffset/.test(skill) && /Never hand-time/.test(skill) && /Learnings log/i.test(skill), null);
+  check("leo skill forbids the sketch engine and em dashes", /NOT hand-drawn/.test(skill) && /no rough\.js/.test(skill) && !/—/.test(skill), null);
+  const leoSrc = join(KIT_TEMPLATE_DIR, "styles", "leo", "src");
+  check("leo package ships palette + sprite + lipsync + motion + component + index", ["palette.ts", "sprite.ts", "lipsync.ts", "motion.ts", "Leo.tsx", "index.ts"].every((f) => existsSync(join(leoSrc, f))), null);
+  const sprite = readFileSync(join(leoSrc, "sprite.ts"), "utf8");
+  check("leo sprite has every viseme the lip sync can emit + a cap variant", ["rest", "mm", "ah", "ee", "oh", "oo", "fv", "smile", "grin", "laugh"].every((v) => new RegExp(`\\b${v}:\\s+\\[`).test(sprite)) && /CAP_BRIM/.test(sprite), null);
+  check("scaffold points at the leo package", sceneScaffold({ ...job, style: "leo" }, { styleHasSrc: true }).includes('"../../../styles/leo/src"'), null);
+  // words.json builder: flattens per-segment words, keeps end only when it is after start, sorts
+  const wb = new Map([
+    [7, [{ text: "later", rel: 4.2, end: 4.6 }, { text: "bad", rel: 5.0, end: 4.9 }]],
+    [3, [{ text: "first", rel: 0.1, end: 0.4 }, { text: "", rel: 0.5 }, { text: "noRel" }]],
+  ]);
+  const wj = buildWordsJson(wb);
+  check("buildWordsJson flattens, sorts by start, drops a bad end and empty/untimed words", JSON.stringify(wj) === JSON.stringify([
+    { text: "first", start: 0.1, end: 0.4 }, { text: "later", start: 4.2, end: 4.6 }, { text: "bad", start: 5.0 },
+  ]), wj);
+  check("buildWordsJson of nothing is an empty list", JSON.stringify(buildWordsJson()) === "[]" && JSON.stringify(buildWordsJson(new Map())) === "[]", null);
+}
+
 if (existsSync(join(KIT_TEMPLATE_DIR, "styles", "n8n-ui"))) { // private style package, absent in public checkouts
   check("n8n-ui style is registered (not default, ships src)", styles.some((s) => s.id === "n8n-ui" && !s.default && !s.custom), styles);
   const skill = readStyleSkill("n8n-ui");
@@ -292,6 +315,7 @@ try {
     check("raw job keeps the chosen track", rawJob.trackIndex === 2, rawJob.trackIndex);
     check("raw job scaffolds a brief + scene the agent can open",
       existsSync(join(rawKit, "src", "jobs", rawJob.id, "brief.md")) &&
+      readFileSync(join(rawKit, "src", "jobs", rawJob.id, "words.json"), "utf8") === "[]" &&
       existsSync(join(rawKit, "src", "jobs", rawJob.id, "Scene.tsx")) &&
       readFileSync(join(rawKit, "src", "jobs", "manifest.ts"), "utf8").includes(rawJob.id), null);
     check("raw job's created notice says where it lands", /10:50/.test(readChat(rawJob)[0].text) && /V3/.test(readChat(rawJob)[0].text), readChat(rawJob)[0]);

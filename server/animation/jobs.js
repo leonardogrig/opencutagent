@@ -388,9 +388,31 @@ function resolveSize(seq, widthOpt, heightOpt) {
 }
 
 /** Write the kit-side job folder (where the agent works) and register the composition. */
-function scaffoldKitJob(job, kitDirPath, briefText) {
+/**
+ * The narration's words for the job as `[{text, start, end}]` in seconds
+ * relative to the animation start, sorted. Styles with a talking character
+ * (the Leo pixel presenter) import it straight into the scene for lip sync.
+ * Always written (an empty list for raw jobs) so `import words from
+ * "./words.json"` resolves in every job. Pure.
+ */
+export function buildWordsJson(wordsBySegment = new Map()) {
+  const out = [];
+  for (const words of wordsBySegment.values()) {
+    for (const w of words || []) {
+      if (!w || typeof w.rel !== "number" || !String(w.text || "").trim()) continue;
+      const entry = { text: String(w.text).trim(), start: w.rel };
+      if (typeof w.end === "number" && w.end > w.rel) entry.end = w.end;
+      out.push(entry);
+    }
+  }
+  out.sort((a, b) => a.start - b.start);
+  return out;
+}
+
+function scaffoldKitJob(job, kitDirPath, briefText, words = []) {
   const jobDir = join(kitDirPath, "src", "jobs", job.id);
   mkdirSync(join(jobDir, "refs"), { recursive: true });
+  writeFileSync(join(jobDir, "words.json"), JSON.stringify(words));
   writeFileSync(join(jobDir, "job.json"), JSON.stringify({
     id: job.id, fps: job.fps, width: job.width, height: job.height,
     durationInFrames: job.durationInFrames, background: job.background, style: job.style,
@@ -521,7 +543,11 @@ export async function createJob(ctx, { indexes, style, background, trackIndex, p
       if (!wordCache.has(s.mediaPath)) wordCache.set(s.mediaPath, readCachedWords(s.mediaPath, ctx.cacheDir));
       const words = wordCache.get(s.mediaPath)
         .filter((w) => w.type !== "spacing" && w.start >= s.sourceInSec - 0.05 && w.start < s.sourceOutSec)
-        .map((w) => ({ text: String(w.text || "").trim(), rel: round3(relStart + Math.max(0, w.start - s.sourceInSec)) }))
+        .map((w) => ({
+          text: String(w.text || "").trim(),
+          rel: round3(relStart + Math.max(0, w.start - s.sourceInSec)),
+          end: typeof w.end === "number" ? round3(Math.min(relEnd, relStart + Math.max(0, w.end - s.sourceInSec))) : undefined,
+        }))
         .filter((w) => w.text);
       if (words.length) wordsBySegment.set(i, words);
     }
@@ -530,7 +556,7 @@ export async function createJob(ctx, { indexes, style, background, trackIndex, p
   const transcriptLines = review.segments
     .filter((s) => s.text && s.fragment !== "empty")
     .map((s) => `${selectedSet.has(s.index) ? ">>> " : "- "}[${mmss(s.startSec)}] ${s.text}`);
-  scaffoldKitJob(job, kitDirPath, buildBrief(job, { selected, transcriptLines, wordsBySegment }));
+  scaffoldKitJob(job, kitDirPath, buildBrief(job, { selected, transcriptLines, wordsBySegment }), buildWordsJson(wordsBySegment));
 
   // Frame-aware: export the sequence's own frames across the range (Premiere
   // renders them, so transforms and timing are exactly what plays), analyze

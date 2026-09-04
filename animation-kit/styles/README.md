@@ -59,6 +59,15 @@ same id wins over a workspace copy.
   asked). The whole system lives in `src/theme.ts`; components never hardcode a value.
   `examples/Showcase.tsx` exercises every component (four pages, 1920x1080, 360 frames): copy it
   into a job folder to see the style, or use it as the QA scene after changing a component.
+- `leo/` ("Leo (pixel presenter)") — a 16-bit pixel-art likeness of the creator (square jaw,
+  black curls, thin wide frames, stubble, black tee; a `hair="cap"` variant) who talks along with
+  the narration. NOT hand-drawn. The 56x64 sprite is authored as a char grid in `src/sprite.ts`
+  (one letter per pixel, `src/palette.ts` is the only place a colour lives) and rendered as
+  merged SVG rects at an integer scale, so it is crisp at any canvas size with zero assets.
+  Lip sync is word-timed (`src/lipsync.ts`: a viseme per syllable from its vowel, landed on each
+  word's onset; the server writes every job's `words.json` for it), idle life is seeded
+  (`src/motion.ts`: blinks, breath, talking bob, glances). Components: `Leo`, `LeoCorner` (stream
+  cam placement, the default), `PixelPanel`. Personal to the user; not a general-purpose style.
 - `n8n-ui/` ("n8n interface") — the REAL n8n app (v2.35.7 dark theme) recreated pixel-exact for
   tutorials, NOT hand-drawn: sidebar, Overview, workflow editor chrome, canvas nodes/edges with
   real integration logos and n8n's own node glyphs, node picker, node details view, executions,
