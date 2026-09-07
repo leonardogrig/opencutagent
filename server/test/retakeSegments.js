@@ -1,8 +1,8 @@
 // Unit checks for clip-bounded retake segmentation + fragment classification.
 // Pure logic, synthetic words — no Premiere, no transcript cache needed.
 import { TICKS_PER_SECOND, sourceRangeToTimelineFrames } from "../transcription/timecode.js";
-import { groupIntoPhrases, groupIntoCaptionChunks, sliceWordsToWindow } from "../transcription/segments.js";
-import { partitionClip, classifyFragments, reconcile, reinsertTarget, planEditMarkers, MARKER_COLORS, srtTimestamp, wrapCaption, buildTranscriptCues, formatSrt, dedupeStackedSegments, carryOverMarks } from "../review.js";
+import { groupIntoPhrases, groupIntoCaptionChunks, sliceWordsToWindow, isCutoffToken } from "../transcription/segments.js";
+import { partitionClip, classifyFragments, addSoundPhrases, SOUND_TEXT, reconcile, reinsertTarget, planEditMarkers, MARKER_COLORS, srtTimestamp, wrapCaption, buildTranscriptCues, formatSrt, dedupeStackedSegments, carryOverMarks } from "../review.js";
 import { planRetakeChunks } from "../ai.js";
 import { stderrListsAudio } from "../audio/probe.js";
 
@@ -405,8 +405,48 @@ check("wrapCaption: wraps past maxLen on word boundary", wrapCaption("aaaa bbbb 
   check("carry: sub-50% overlap carries nothing", barely[0].decision === "keep", barely[0]);
 }
 
-// --- groupIntoCaptionChunks: caption-style segmentation ("Generated segments" OFF) ---
+// --- groupIntoCaptionChunks: sentence-level segmentation (the Retakes segmentation) ---
 {
+  // A cut-off word (trailing dash) ends its take even with NO pause before the restart:
+  // "n8n now has-- n8n now has a set of skills." must not stay one segment.
+  const restart = [word("n8n", 0, 0.2), word("now", 0.25, 0.4), word("has--", 0.45, 0.6), word("n8n", 0.7, 0.9), word("now", 0.95, 1.1), word("has", 1.15, 1.3), word("a", 1.35, 1.4), word("set", 1.45, 1.7), word("of", 1.75, 1.85), word("skills.", 1.9, 2.3)];
+  const rs = groupIntoCaptionChunks(restart, {});
+  check("caption: a cut-off word splits the restart from the full take", rs.length === 2 && rs[0].text === "n8n now has--" && rs[1].text === "n8n now has a set of skills.", rs.map((c) => c.text));
+  check("caption: a one-word cut-off stands alone too", groupIntoCaptionChunks([word("It--", 0, 0.2), word("It", 0.3, 0.4), word("works.", 0.5, 0.8)], {}).length === 2);
+  check("isCutoffToken: dashes, not hyphenated words", isCutoffToken("compar--") && isCutoffToken("co-") && isCutoffToken("time\u2014") && !isCutoffToken("well-known") && !isCutoffToken("-"));
+  check("caption: cut-off break can be disabled", groupIntoCaptionChunks(restart, { cutoffBreak: false, repeatBreak: false }).length === 1);
+
+  // An IMMEDIATE REPEAT with no dash and no pause is a restart: "let's talk, let's talk about Muse".
+  const rep = [word("let's", 0, 0.2), word("talk,", 0.25, 0.5), word("let's", 0.55, 0.7), word("talk", 0.75, 0.9), word("about", 0.95, 1.1), word("Muse.", 1.15, 1.5)];
+  const rc = groupIntoCaptionChunks(rep, {});
+  check("caption: an immediate repeat starts a new segment", rc.length === 2 && rc[0].text === "let's talk," && rc[1].text === "let's talk about Muse.", rc.map((c) => c.text));
+  const three = [word("in", 0, 0.1), word("August", 0.15, 0.4), word("5th,", 0.45, 0.7), word("in", 0.8, 0.9), word("August", 0.95, 1.2), word("5th,", 1.25, 1.5), word("we", 1.55, 1.7), word("saw", 1.75, 1.9), word("it.", 1.95, 2.2)];
+  check("caption: a three-word repeat splits before the second attempt", groupIntoCaptionChunks(three, {})[0].text === "in August 5th,", groupIntoCaptionChunks(three, {}).map((c) => c.text));
+  const stutter = [word("the", 0, 0.1), word("the", 0.15, 0.25), word("model", 0.3, 0.6), word("works.", 0.65, 0.9)];
+  check("caption: a one-word stutter does not split", groupIntoCaptionChunks(stutter, {}).length === 1);
+  check("caption: repeat break can be disabled", groupIntoCaptionChunks(rep, { repeatBreak: false }).length === 1);
+
+  // A capitalised sentence starter after an unpunctuated word is a boundary Scribe forgot to punctuate.
+  const join = [word("with", 0, 0.2), word("this", 0.25, 0.4), word("price", 0.45, 0.8), word("And", 0.9, 1.0), word("by", 1.05, 1.2), word("the", 1.25, 1.3), word("way.", 1.35, 1.6)];
+  const jc = groupIntoCaptionChunks(join, {});
+  check("caption: capitalised starter after no punctuation splits", jc.length === 2 && jc[0].text === "with this price" && jc[1].text === "And by the way.", jc.map((c) => c.text));
+  const noun = [word("talk", 0, 0.2), word("about", 0.25, 0.4), word("Muse", 0.45, 0.7), word("Spark", 0.75, 1.0), word("and", 1.05, 1.1), word("I", 1.15, 1.2), word("think.", 1.25, 1.6)];
+  check("caption: proper nouns and 'I' never split", groupIntoCaptionChunks(noun, {}).length === 1, groupIntoCaptionChunks(noun, {}).map((c) => c.text));
+  const comma = [word("with", 0, 0.2), word("this,", 0.25, 0.4), word("And", 0.5, 0.6), word("more.", 0.65, 0.9)];
+  check("caption: a comma before the starter blocks the split", groupIntoCaptionChunks(comma, {}).length === 1);
+
+  // Audio events stand alone as word-empty segments (auto-cut later), never inside a sentence.
+  const ev = [word("Fine.", 0, 0.3), { type: "audio_event", text: "[clears throat]", start: 0.4, end: 0.9 }, word("Next", 1.0, 1.2), word("point.", 1.25, 1.6)];
+  const ec = groupIntoCaptionChunks(ev, {});
+  check("caption: an audio event is its own word-empty chunk", ec.length === 3 && ec[1].text === "[clears throat]" && ec[1].wordCount === 0, ec.map((c) => [c.text, c.wordCount]));
+  check("caption: events fold into the sentence when eventsAlone is off", groupIntoCaptionChunks(ev, { eventsAlone: false }).length === 1);
+
+  // Envelope-detected sounds merge into the phrase list in time order and tile like any phrase.
+  const withSound = addSoundPhrases(ec, [{ start: 1.7, end: 2.1 }]);
+  check("addSoundPhrases: appended in time order as word-empty phrases", withSound.length === 4 && withSound[3].text === SOUND_TEXT && withSound[3].wordCount === 0, withSound.map((p) => p.text));
+  const sparts = partitionClip(clip("V1.0", 0, 2.5, 0), addSoundPhrases(ec, [{ start: 0.95, end: 0.98 }]));
+  check("addSoundPhrases: tiling still contiguous", sparts.every((p, i) => i === 0 || approx(sparts[i - 1].end, p.start)) && approx(sparts[sparts.length - 1].end, 2.5), sparts.map((p) => [p.start, p.end]));
+
   // One long uninterrupted take: two sentences then a run past the word cap.
   const flow = [];
   const say = (text, at) => flow.push(word(text, at, at + 0.2));

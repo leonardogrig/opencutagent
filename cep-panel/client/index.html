@@ -366,14 +366,11 @@
         </div>
         <div class="statusrow">
           <div id="statusbar" class="statusbar"></div>
-          <label class="selctl" id="retTrackWrap" data-tip="Which audio track is transcribed (defaults to A1). Pick the one your voice is on when the timeline stacks music or b-roll. Only used for caption-style segments; with Generated segments ON the transcript follows the timeline's clips.">
+          <label class="selctl" id="retTrackWrap" data-tip="Which audio track is transcribed (defaults to A1). Pick the one your voice is on when the timeline stacks music or b-roll. Segments are one per sentence, pause or cut-off word, whether or not you removed silences first.">
             <span>Track</span>
             <select id="retTrack">
               <option value="A1">A1</option>
             </select>
-          </label>
-          <label class="chk follow" data-tip="ON: segments follow your timeline's clips and pauses — best after Remove Silences shaped the edit. OFF: one segment per sentence with exact timings (like YouTube subtitles), transcribed from the Track picked on the left — works great on an uncut recording, no silence pass needed.">
-            <input type="checkbox" id="segGen" class="switch" role="switch" checked /> Generated segments
           </label>
           <label class="chk follow" data-tip="Highlights and scrolls to the segment under Premiere's playhead as you scrub. Click a segment's time to jump the playhead there.">
             <input type="checkbox" id="followToggle" class="switch" role="switch" checked /> Follow playhead
@@ -390,7 +387,8 @@
 
         <div class="footer">
           <label class="chk" data-tip="Closes the gaps that removed segments leave behind, shifting everything left (a ripple delete). Uncheck to keep the original timing and leave empty gaps instead."><input type="checkbox" id="removeGaps" checked /> Remove gaps when applying (ripple)</label>
-          <label class="chk" data-tip="A segment can hold long stretches of dead air around its words (the row only shows the speech). With this on, Apply All also trims that non-speech air inside every Keep, so the timeline is left with just the spoken parts (about 0.15s of breathing room is kept around words)."><input type="checkbox" id="trimExcess" /> Remove excess (keep speech only)</label>
+          <label class="chk pause" data-tip="Apply All also shrinks every stretch of no speech longer than this inside the kept segments: between words, between sentences and at clip edges. The pause is measured on the audio itself, and about 0.12s of air stays on each side so words are never clipped."><input type="checkbox" id="trimPauses" /> Remove pauses longer than <span class="inp inline"><input id="pauseMs" type="number" min="0" step="50" value="250" /><span class="unit">ms</span></span></label>
+          <label class="chk" data-tip="Apply All also cuts filler words (um, uh, er, hmm) out of the kept segments. Each cut point is placed in the quiet around the word, so the words next to it are never clipped."><input type="checkbox" id="removeFillers" checked /> Remove fillers (um, uh)</label>
           <button id="undoBtn" class="undo-btn" style="display:none" data-tip="Restores the timeline to how it was before the last apply.">
             <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6.7 3L3 13"/></svg>
             <span class="lbl">Undo last apply</span>

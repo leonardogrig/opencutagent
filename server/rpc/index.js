@@ -101,7 +101,7 @@ function reviewResult(review) {
  */
 async function loadSegments(params, helpers, ctx) {
   return cancellable(ctx, async () => {
-    const review = await buildReview(ctx, { clipId: params.clip_id, refresh: !!params.refresh, transcribeModel: params.transcribe_model, track: params.track, segmentMode: params.segment_mode, carryMarks: params.fresh !== true }, helpers.progress);
+    const review = await buildReview(ctx, { clipId: params.clip_id, refresh: !!params.refresh, transcribeModel: params.transcribe_model, track: params.track, carryMarks: params.fresh !== true }, helpers.progress);
     helpers.progress(`Found ${review.segments.length} segments.`);
     return reviewResult(review);
   });
@@ -117,7 +117,7 @@ async function autoLoadSegments(params, helpers, ctx) {
   if (ctx.panelOp) return { loaded: false, reason: "busy" };
   try {
     return await cancellable(ctx, async () => {
-      const review = await buildReview(ctx, { transcribeModel: params.transcribe_model, track: params.track, segmentMode: params.segment_mode, cacheOnly: true, carryMarks: true }, helpers.progress);
+      const review = await buildReview(ctx, { transcribeModel: params.transcribe_model, track: params.track, cacheOnly: true, carryMarks: true }, helpers.progress);
       return { loaded: true, ...reviewResult(review) };
     });
   } catch (e) {
@@ -144,16 +144,19 @@ async function applyDecisions(params, helpers, ctx) {
     }
 
     const ripple = params.removeGaps === true;
-    const trimExcess = params.trimExcess === true;
-    const res = await applyReview(ctx, { removeGaps: ripple, trimExcess }, helpers.progress);
+    const trimPauses = params.trimPauses === true;
+    const pauseMs = Number(params.pauseMs);
+    const removeFillers = params.removeFillers === true;
+    const res = await applyReview(ctx, { removeGaps: ripple, trimPauses, pauseMinSec: Number.isFinite(pauseMs) ? pauseMs / 1000 : undefined, removeFillers }, helpers.progress);
     if (res.requested === 0) {
       // Distinguish "nothing is marked" from "your cuts are already gone" — the
       // latter happens after a successful apply left the list stale, and a bare
       // "nothing to cut" reads as if apply never works.
+      const trims = [trimPauses ? "pauses" : null, removeFillers ? "filler words" : null].filter(Boolean);
       const message =
         res.cutsMarked === 0
           ? "No segments are marked Cut" +
-            (trimExcess ? " and no excess non-speech was found to trim." : ". Mark segments (or run Analyze w/ Claude), then Apply All.")
+            (trims.length ? ` and no ${trims.join(" or ")} found to trim.` : ". Mark segments (or run Analyze w/ Claude), then Apply All.")
           : `All ${res.cutsMarked} Cut segment(s) are already removed from the timeline (~${fmtDur(res.alreadyGoneSec)} cut earlier). Nothing new to apply.`;
       return { applied: 0, ripple, cutsRequested: 0, cutsMarked: res.cutsMarked, alreadyGone: res.alreadyGone, revision: res.revision, message };
     }
@@ -171,7 +174,8 @@ async function applyDecisions(params, helpers, ctx) {
         (res.aborted
           ? `Stopped after ${res.applied} cut(s).`
           : `Applied ${res.applied}/${res.requested} cut(s) (~${fmtDur(res.appliedSec)})${ripple ? " and closed the gaps" : " (gaps left in place)"}.`) +
-        (res.excessSpans ? ` Includes ${res.excessSpans} excess non-speech trim(s) inside keeps.` : "") +
+        (res.pauseSpans ? ` Includes ${res.pauseSpans} pause trim(s).` : "") +
+        (res.fillerSpans ? ` Includes ${res.fillerSpans} filler word cut(s).` : "") +
         (res.alreadyGone ? ` ${res.alreadyGone} other cut(s) had already been removed.` : "") +
         (res.errors && res.errors.length ? ` ${res.errors.length} error(s). First: ${res.errors[0].error}` : "") +
         (res.applied > 0 ? " Use Undo to revert." : ""),
@@ -390,7 +394,7 @@ async function aiRetakes(params, helpers, ctx) {
     let review = ctx.review;
     if (!review || !review.segments || !review.segments.length) {
       helpers.progress("Transcribing the timeline…");
-      review = await buildReview(ctx, { clipId: params.clip_id, transcribeModel: params.transcribe_model, track: params.track, segmentMode: params.segment_mode }, helpers.progress);
+      review = await buildReview(ctx, { clipId: params.clip_id, transcribeModel: params.transcribe_model, track: params.track }, helpers.progress);
     }
     if (token.aborted) throw new Error("Cancelled");
     if (!review.segments.length) throw new Error("No segments to analyze. Load the timeline first.");
@@ -568,9 +572,11 @@ const ENV_SPECS = [
   { key: "EDITAGENT_TRANSCRIBE_PAD", def: "0.25", desc: "Seconds of audio context kept on each edge of a transcribed range so edge words aren't clipped." },
   { key: "EDITAGENT_REBUILD_MIN", def: "100", desc: "Ripple applies with at least this many cuts use the fast XML rebuild instead of razoring in place. 0 disables it." },
   { key: "EDITAGENT_ROUNDTRIP", def: "1", desc: "Fast applies round-trip Premiere's own XML so effects survive. Set 0 to use the bare rebuild (drops effects)." },
-  { key: "EDITAGENT_SEGMENT_WORDS", def: "24", desc: "Safety cap on words per segment when Generated segments is OFF (one segment per sentence; the cap only splits punctuation-less run-on speech)." },
-  { key: "EDITAGENT_TRIM_EXCESS_PAD", def: "0.15", desc: "Seconds of breathing room kept around words when Remove excess trims non-speech air." },
-  { key: "EDITAGENT_TRIM_EXCESS_MIN", def: "0.2", desc: "Non-speech air shorter than this many seconds is left alone by Remove excess." },
+  { key: "EDITAGENT_SEGMENT_WORDS", def: "24", desc: "Safety cap on words per Retakes segment (segments break on sentences, pauses and cut-off words; the cap only splits punctuation-less run-on speech)." },
+  { key: "EDITAGENT_CUT_MARGIN_BEFORE_MS", def: "120", desc: "Air kept before the first word of a kept segment when a retake cut lands ahead of it, in milliseconds." },
+  { key: "EDITAGENT_CUT_MARGIN_AFTER_MS", def: "120", desc: "Air kept after the last word of a kept segment when a retake cut lands behind it, in milliseconds." },
+  { key: "EDITAGENT_CUT_THRESHOLD_DB", def: "", desc: "Loudness below which audio counts as quiet when retake cut points are placed between words. Empty = suggested per recording; off = place cuts from transcript timings only." },
+  { key: "EDITAGENT_PAUSE_MS", def: "250", desc: "Fallback for the Retakes pause setting when the caller sends none (MCP): a stretch of no speech longer than this many milliseconds is shrunk to the margins." },
   { key: "EDITAGENT_ANIM_RENDER_TIMEOUT_MS", def: "", desc: "Optional hard time limit for one animation render, in milliseconds. Empty = no limit (a render is only stopped if it stops producing frames)." },
   { key: "EDITAGENT_ANIM_FRAME_STEP", def: "0.5", desc: "Use frames: seconds between the footage frames exported from the sequence for the animation agent (widened automatically on long selections)." },
   { key: "EDITAGENT_ANIM_VERIFY_ROUNDS", def: "1", desc: "Use frames: how many automatic fix-up turns the agent gets when its drawings do not match the footage before the clip is rendered anyway. 0 = never send it back." },

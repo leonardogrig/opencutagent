@@ -126,15 +126,17 @@ primary buttons keep crisp dark labels (white-on-Ember is only ~3.1:1).
   cuts still ripple every track, so picture and sound stay in sync.
 - **Retakes transcription scope** — the `.statusrow` carries the same `.selctl`
   Track picker (`#retTrack`, persisted `editagent.retake.track`, default A1, no
-  "Auto") plus a **Generated segments** switch (`#segGen`, persisted
-  `editagent.retake.generated`, default ON): ON = clip/pause-tiled segments (the
-  silence tab's output shapes them) — the Track picker HIDES in this mode
-  (`#retTrackWrap.hidden`), no track choice applies; OFF = ONE SEGMENT PER
-  SENTENCE (`segment_mode:"words"`, breaks at . ! ?, a 24-word safety cap for
-  run-ons — like YouTube subtitles), transcribed from the picked track, so an
-  UNCUT recording still yields readable segments. Changing either control
-  re-segments from the cached transcript (free, marks carried over) and never
-  bills on its own.
+  "Auto"). Segments are always ONE PER SENTENCE (breaks at . ! ?, pauses,
+  cut-off words with a trailing dash, immediate word-for-word repeats and
+  capitalised sentence starters Scribe left unpunctuated; a 24-word safety cap
+  for run-ons). Scribe audio events ("[clears throat]") and loud stretches the
+  transcript did not hear ("(unrecognized sound)", from the loudness envelope)
+  are their own word-empty rows, auto-marked Cut like pops. So an
+  uncut recording and a silence-tightened one list the same way. Changing the
+  track re-segments from the cached transcript (free, marks carried over) and
+  never bills on its own. (The former "Generated segments" switch is gone: the
+  clip-tiled mode hid restarts inside one segment and cut on raw word
+  timestamps.)
 - **Layout compaction** — Remove Silences has ONE toolbar row (`.sil-bar`:
   Scan/Rescan + truncating status + `.viewctl` track picker/Follow/zoom); the legend keeps
   swatches + a "drag to pan · scroll to zoom" hint. The threshold block is a
@@ -148,10 +150,17 @@ primary buttons keep crisp dark labels (white-on-Ember is only ~3.1:1).
   consecutive "Removed" segments AND of auto-cut no-speech clips collapse into
   `.seg-group` accordions (`runGroupHtml`), closed by default. The ripple
   checkbox ("Remove gaps when applying") defaults to ON. A second `.chk`,
-  **"Remove excess (keep speech only)"** (`#trimExcess`, default OFF), makes
-  Apply All also trim the non-speech air inside kept segments (server
-  `computeExcessRanges`); when checked the footer summary appends a live
-  "~Xs excess" estimate and Apply enables even with zero cuts. Row times and
+  **"Remove pauses longer than [250] ms"** (`#trimPauses` + inline number
+  `#pauseMs`, persisted `editagent.retake.pauseMs`, default OFF / 250 ms),
+  makes Apply All also shrink every real pause longer than the setting inside
+  the kept speech (between words as well as between sentences and at clip
+  edges); when checked the footer summary appends a live "~Xs of pauses"
+  estimate (from each segment's transcript gaps `s.pauses`) and Apply enables
+  even with zero cuts. A third `.chk`, **"Remove fillers (um, uh)"**
+  (`#removeFillers`, default ON), makes Apply All also cut filler words out of
+  kept segments; the footer appends "N fillers (~Xs)" from the per-segment
+  `fillerCount`/`fillerSec` the server sends. All cut edges are planned server
+  side in the quiet between words (`server/cutplan.js`). Row times and
   the footer count only PENDING cuts (`isPendingCut` = cut, unprotected, still
   on the timeline); already-applied cuts show as "N removed" instead.
 

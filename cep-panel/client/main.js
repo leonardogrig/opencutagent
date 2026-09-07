@@ -43,6 +43,13 @@
   /* ---------- small helpers ---------- */
   function pad2(n) { return (n < 10 ? "0" : "") + Math.floor(n); }
   function mmss(sec) { return Math.floor(sec / 60) + ":" + pad2(sec % 60); }
+  /* Exact position with milliseconds ("0:08.030"), for the expanded row's
+     range: a cut edge is placed to the millisecond, so the row shows it. */
+  function mmssMs(sec) {
+    var ms = Math.max(0, Math.round((sec || 0) * 1000));
+    var frac = ms % 1000;
+    return mmss(Math.floor(ms / 1000)) + "." + (frac < 10 ? "00" : frac < 100 ? "0" : "") + frac;
+  }
   /* A LENGTH of footage, for humans: "0.42s" / "8.4s" / "45s" / "1:25" / "1:02:03".
      Raw seconds stop being readable around a minute ("85.166s", "300s"), so
      anything past 59s becomes mm:ss; precision shrinks as the number grows.
@@ -1926,9 +1933,8 @@
       mapRefreshAt: 0, mapRefreshing: false,
       // timeline-change detection (cheap signature piggybacked on the playhead poll):
       pendingSig: null, sigStable: 0, loadedSig: null,
-      // transcription scope + segmentation (sent on every load/resync):
-      track: loadPref("editagent.retake.track", "A1"),         // audio track for caption mode (no "auto")
-      genSegs: loadPref("editagent.retake.generated", "1") !== "0", // ON = clip-tiled (default), OFF = caption chunks
+      // transcription scope (sent on every load/resync):
+      track: loadPref("editagent.retake.track", "A1"),         // audio track that is transcribed (no "auto")
       tracks: [], tracksFetched: false,
     };
     var POLL_MS = 300, MAP_LAZY_MS = 4000;
@@ -1942,7 +1948,7 @@
     var el = {};
 
     function cache() {
-      ["loadBtn", "aiBtn", "retakeStopBtn", "statusbar", "segments", "removeGaps", "trimExcess", "applyBtn", "softApplyBtn", "clearMarkersBtn", "exportBtn", "undoBtn", "startOverBtn", "summary", "followToggle", "retTrack", "retTrackWrap", "segGen"].forEach(function (id) { el[id] = $(id); });
+      ["loadBtn", "aiBtn", "retakeStopBtn", "statusbar", "segments", "removeGaps", "trimPauses", "pauseMs", "removeFillers", "applyBtn", "softApplyBtn", "clearMarkersBtn", "exportBtn", "undoBtn", "startOverBtn", "summary", "followToggle", "retTrack", "retTrackWrap"].forEach(function (id) { el[id] = $(id); });
     }
     function loadFollow() { try { state.follow = window.localStorage.getItem("editagent.retake.follow") !== "0"; } catch (e) { state.follow = true; } }
     function persistFollow() { try { window.localStorage.setItem("editagent.retake.follow", state.follow ? "1" : "0"); } catch (e) {} }
@@ -1967,14 +1973,12 @@
     }
     // Silent, cost-free load: the server builds segments only if the transcript
     // cache fully covers the current timeline (never bills, needs no key). Runs
-    // Params every load/resync shares: model + the Track pick + segmentation
-    // mode ("clip" = Generated segments ON, "words" = caption-style chunks) —
-    // an auto-resync MUST use the same mode or reconnecting flips the list.
+    // Params every load/resync shares: model + the Track pick. An auto-resync
+    // MUST send the same scope as the last explicit load or reconnecting
+    // silently rebuilds a different list.
     function loadParams() {
-      var p = { transcribe_model: AI.sttModel(), segment_mode: state.genSegs ? "clip" : "words" };
-      // The Track pick only applies to caption mode; Generated segments follow
-      // the timeline's clips (the silence tab's output), no track choice needed.
-      if (!state.genSegs && state.track) p.track = state.track;
+      var p = { transcribe_model: AI.sttModel() };
+      if (state.track) p.track = state.track;
       return p;
     }
     // on connect and when the tab opens, so a known project appears by itself.
@@ -2019,8 +2023,7 @@
       // Carry the transcription scope: if this analyze has to load first, it
       // must build the SAME list the Transcribe button would.
       var aiP = AI.params();
-      aiP.segment_mode = state.genSegs ? "clip" : "words";
-      if (!state.genSegs && state.track) aiP.track = state.track;
+      if (state.track) aiP.track = state.track;
       callServer("aiRetakes", aiP, function (m) { setStatus(m); }).then(
         function (res) {
           setLoading(el.aiBtn, false, "Analyze w/ Claude"); setBusy(false);
@@ -2047,16 +2050,17 @@
       refreshMap(true); // the pushed list may be freshly rebuilt; re-reconcile before trusting absent states
     }
     function applyAll() {
-      var trimming = el.trimExcess && el.trimExcess.checked;
+      var trimming = pausesOn();
+      var fillers = fillersOn() && fillerEstimate().count > 0;
       var cuts = state.segments.filter(function (s) { return s.decision === "cut" && !s.protected; });
-      if (!cuts.length && !trimming) { toast("Nothing marked Cut."); return; }
-      if (cuts.length && !cuts.some(function (s) { return !isAbsent(s); }) && !trimming) {
+      if (!cuts.length && !trimming && !fillers) { toast("Nothing marked Cut."); return; }
+      if (cuts.length && !cuts.some(function (s) { return !isAbsent(s); }) && !trimming && !fillers) {
         toast("Those cuts are already removed from the timeline. Nothing left to apply.", "info");
         return;
       }
       setBusy(true); setStatus("Applying…"); setLoading(el.applyBtn, true, "Applying…");
       var payload = state.segments.map(function (s) { return { index: s.index, startFrame: s.startFrame, endFrame: s.endFrame, decision: s.decision, protected: s.protected }; });
-      callServer("applyDecisions", { segments: payload, removeGaps: el.removeGaps.checked, trimExcess: trimming }, function (m) { setStatus(m); }).then(
+      callServer("applyDecisions", { segments: payload, removeGaps: el.removeGaps.checked, trimPauses: trimming, pauseMs: pauseMs(), removeFillers: fillersOn() }, function (m) { setStatus(m); }).then(
         function (res) {
           if (res.undoable) { state.undoAvailable = true; Silence.clearUndoable(); } // shared single undo point
           setStatus(res.message || "Applied.");
@@ -2294,10 +2298,11 @@
       el.retakeStopBtn.style.display = state.busy ? "" : "none";
       // Only cuts still ON the timeline count — after an apply the marked segments
       // go "absent" and there is nothing left for Apply All / Soft Apply to do.
-      // With "Remove excess" checked, Apply also has trim work even with zero cuts.
+      // With "Remove pauses" checked, Apply also has trim work even with zero cuts.
       var hasCuts = state.segments.some(function (s) { return isPendingCut(s); });
-      var trimming = state.loaded && el.trimExcess && el.trimExcess.checked;
-      el.applyBtn.disabled = !connected() || state.busy || (!hasCuts && !trimming);
+      var trimming = state.loaded && pausesOn();
+      var fillers = state.loaded && fillersOn() && fillerEstimate().count > 0;
+      el.applyBtn.disabled = !connected() || state.busy || (!hasCuts && !trimming && !fillers);
       // Soft Apply marks the same content non-destructively (cuts incl. no-speech empties).
       if (el.softApplyBtn) el.softApplyBtn.disabled = !connected() || state.busy || !hasCuts;
       if (el.clearMarkersBtn) {
@@ -2311,20 +2316,37 @@
       el.undoBtn.disabled = !connected();
       updateSummary();
     }
-    // Estimated seconds "Remove excess" would trim: the non-speech air around the
-    // words of each pending Keep. Mirrors the server's computeExcessRanges defaults
-    // (0.15s pad, 0.2s minimum span); an estimate, so the footer shows "~".
-    function excessEstimateSec() {
-      var PAD = 0.15, MIN = 0.2, total = 0;
+    function fillersOn() { return !!(el.removeFillers && el.removeFillers.checked); }
+    // Filler words "Remove fillers" would cut: counted per pending Keep by the
+    // server at load time (fillerCount / fillerSec on each segment).
+    function fillerEstimate() {
+      var count = 0, sec = 0;
       for (var i = 0; i < state.segments.length; i++) {
         var s = state.segments[i];
-        if (s.decision === "cut" || s.protected || !(s.wordCount > 0)) continue;
-        if (s.sourceSpeechInSec == null || s.sourceSpeechOutSec == null || s.sourceInSec == null || s.sourceOutSec == null) continue;
-        if (isAbsent(s)) continue;
-        var lead = (s.sourceSpeechInSec - PAD) - s.sourceInSec;
-        var trail = s.sourceOutSec - (s.sourceSpeechOutSec + PAD);
-        if (lead >= MIN) total += lead;
-        if (trail >= MIN) total += trail;
+        if (s.decision === "cut" || s.protected || !(s.fillerCount > 0) || isAbsent(s)) continue;
+        count += s.fillerCount; sec += s.fillerSec || 0;
+      }
+      return { count: count, sec: sec };
+    }
+    function pausesOn() { return !!(el.trimPauses && el.trimPauses.checked); }
+    // The user's pause setting in ms (persisted); blank or negative falls back to 250.
+    function pauseMs() {
+      var v = el.pauseMs ? parseInt(el.pauseMs.value, 10) : NaN;
+      return isFinite(v) && v >= 0 ? v : 250;
+    }
+    // Estimated seconds "Remove pauses" would trim: the server lists each kept
+    // segment's transcript gaps (s.pauses); a real pause runs ~0.23s shorter than
+    // its transcript gap (word timestamps sit inside the words) and keeps 0.24s
+    // of air. The real edges come from the audio on apply, so the footer shows "~".
+    function pauseEstimateSec() {
+      var SLOP = 0.23, AIR = 0.24, min = pauseMs() / 1000, total = 0;
+      for (var i = 0; i < state.segments.length; i++) {
+        var s = state.segments[i];
+        if (s.decision === "cut" || s.protected || !s.pauses || isAbsent(s)) continue;
+        for (var k = 0; k < s.pauses.length; k++) {
+          var real = s.pauses[k] - SLOP;
+          if (real > min && real - AIR > 0) total += real - AIR;
+        }
       }
       return total;
     }
@@ -2336,10 +2358,12 @@
       var removed = state.segments.filter(function (s) { return s.decision === "cut" && !s.protected && isAbsent(s); }).length;
       var secs = pending.reduce(function (a, s) { return a + (s.durationSec || 0); }, 0);
       var flagged = state.segments.filter(function (s) { return s.fragment === "short"; }).length;
-      var excess = (el.trimExcess && el.trimExcess.checked) ? excessEstimateSec() : 0;
+      var excess = pausesOn() ? pauseEstimateSec() : 0;
+      var fill = fillersOn() ? fillerEstimate() : { count: 0, sec: 0 };
       el.summary.textContent =
         state.segments.length + " segments · " + pending.length + " to cut · ~" + fmtDur(secs) + " to remove" +
-        (excess >= 0.2 ? " · ~" + fmtDur(excess) + " excess" : "") +
+        (excess >= 0.2 ? " · ~" + fmtDur(excess) + " of pauses" : "") +
+        (fill.count ? " · " + fill.count + " filler" + (fill.count === 1 ? "" : "s") + " (~" + fmtDur(fill.sec) + ")" : "") +
         (removed ? " · " + removed + " removed" : "") +
         (flagged ? " · " + flagged + " flagged" : "");
     }
@@ -2373,7 +2397,7 @@
       html += "</span></div>";
       if (open) {
         html += '<div class="seg-detail">';
-        html += '<div class="seg-meta">' + mmss(tStart) + " – " + mmss(tEnd) + (s.reason ? " · " + esc(s.reason) : "") + (s.protected ? " · [Protected]" : "") + "</div>";
+        html += '<div class="seg-meta">' + mmssMs(tStart) + " - " + mmssMs(tEnd) + (s.reason ? " · " + esc(s.reason) : "") + (s.protected ? " · [Protected]" : "") + "</div>";
         html += '<div class="seg-actions">';
         if (absent && !s.protected) html += '<button data-act="reinsert" class="reinsert"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6.7 3L3 13"/></svg><span class="lbl">Re-insert</span></button>';
         else html += '<button data-act="toggle">Mark as ' + (s.decision === "cut" ? "Keep" : "Cut") + "</button>";
@@ -2450,7 +2474,13 @@
       el.aiBtn.addEventListener("click", analyze);
       el.retakeStopBtn.addEventListener("click", stop);
       el.applyBtn.addEventListener("click", applyAll);
-      if (el.trimExcess) el.trimExcess.addEventListener("change", updateButtons); // re-gate Apply + refresh the excess estimate
+      if (el.trimPauses) el.trimPauses.addEventListener("change", updateButtons); // re-gate Apply + refresh the pause estimate
+      if (el.pauseMs) {
+        var savedMs = parseInt(loadPref("editagent.retake.pauseMs", "250"), 10);
+        if (isFinite(savedMs) && savedMs >= 0) el.pauseMs.value = savedMs;
+        el.pauseMs.addEventListener("input", function () { savePref("editagent.retake.pauseMs", String(pauseMs())); updateButtons(); });
+      }
+      if (el.removeFillers) el.removeFillers.addEventListener("change", updateButtons); // re-gate Apply + refresh the filler count
       el.softApplyBtn.addEventListener("click", softApply);
       el.clearMarkersBtn.addEventListener("click", clearMarkers);
       el.startOverBtn.addEventListener("click", startOver);
@@ -2462,7 +2492,6 @@
         el.followToggle.addEventListener("change", function () { state.follow = el.followToggle.checked; persistFollow(); });
       }
       renderTracks();
-      syncTrackVisibility();
       if (el.retTrack) {
         el.retTrack.addEventListener("change", function () {
           state.track = el.retTrack.value || "A1";
@@ -2470,21 +2499,9 @@
           rebuildFromCache("Track changed.");
         });
       }
-      if (el.segGen) {
-        el.segGen.checked = state.genSegs;
-        el.segGen.addEventListener("change", function () {
-          state.genSegs = el.segGen.checked;
-          savePref("editagent.retake.generated", state.genSegs ? "1" : "0");
-          syncTrackVisibility();
-          rebuildFromCache(state.genSegs ? "Rebuilding timeline segments." : "Rebuilding sentence segments.");
-        });
-      }
     }
 
-    /* ----- transcription scope controls (track picker + segment mode) ----- */
-    // The Track pick belongs to caption mode only; with Generated segments ON
-    // the transcript follows the timeline's clips, so the picker hides entirely.
-    function syncTrackVisibility() { if (el.retTrackWrap) el.retTrackWrap.hidden = state.genSegs; }
+    /* ----- transcription scope controls (track picker) ----- */
     function renderTracks() {
       if (!el.retTrack) return;
       var html = "", i, t, found = false;

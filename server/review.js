@@ -5,17 +5,35 @@ import { getTimeline, round3, isAborted, fmtDur } from "./tools/util.js";
 import { hasAudioStream } from "./audio/probe.js";
 import { liveEnv } from "./config.js";
 import { transcribeSourceRanges } from "./transcription/transcribe.js";
-import { groupIntoPhrases, groupIntoCaptionChunks, sliceWordsToWindow } from "./transcription/segments.js";
+import { groupIntoCaptionChunks, sliceWordsToWindow, DEFAULT_FILLERS } from "./transcription/segments.js";
 import { sourceRangeToTimelineFrames } from "./transcription/timecode.js";
+import { getLevels } from "./audio/levels.js";
 import { captureUndo } from "./undo.js";
 import { applyRangesBatched, selectClips } from "./silences.js";
+import { planCutSpans, mapSpansToTimeline, makeEnv, fillerStats, findUnrecognizedSounds, normPath, DEFAULT_MARGIN_BEFORE_SEC, DEFAULT_MARGIN_AFTER_SEC, DEFAULT_PAUSE_MIN_SEC } from "./cutplan.js";
+import { log } from "./log.js";
 
-// A clip is split into phrases on an internal pause >= this (sub-clip false
-// starts the silence pass didn't separate still get their own segment).
+// A clip is split into segments on an internal pause >= this (besides sentence
+// ends and cut-off words): sub-clip false starts the silence pass didn't
+// separate still get their own segment.
 const PHRASE_GAP_SEC = 0.5;
 // Segments shorter than this that DO contain speech are flagged (not auto-cut) —
 // they may be a real short word ("Yes.") or a clipped false start.
 const MIN_FRAGMENT_SEC = 0.5;
+// Label of a segment carved out for a loud sound the transcript did not hear
+// (throat clear, cough, noise). Word-empty, so it is auto-cut like a pop.
+export const SOUND_TEXT = "(unrecognized sound)";
+
+/**
+ * Merge envelope-detected sounds into a clip's sentence phrases as word-empty
+ * phrases of their own, in time order. Pure (unit-tested).
+ */
+export function addSoundPhrases(phrases, sounds) {
+  if (!sounds || !sounds.length) return phrases;
+  const all = phrases.concat(sounds.map((s) => ({ start: s.start, end: s.end, text: SOUND_TEXT, speaker: null, wordCount: 0, sound: true })));
+  all.sort((x, y) => x.start - y.start);
+  return all;
+}
 
 /**
  * Split one timeline clip into contiguous source-second segments that exactly
@@ -37,7 +55,7 @@ export function partitionClip(clip, phrases) {
     // Where the WORDS actually are inside the tile: segments tile the whole clip,
     // so a segment can hold minutes of dead air after its last word. The speech
     // extent (clamped to the tile; a word midpoint-sliced into the clip can end
-    // past sourceOut) is what "Remove excess" keeps.
+    // past sourceOut) is what the pause trim measures from.
     parts.push({
       start,
       end,
@@ -95,11 +113,13 @@ export async function buildReview(ctx, opts = {}, onProgress = () => {}) {
   const clips = selectClips(timeline, opts.clipId, opts.track);
   if (clips.length === 0) throw new Error("No clips with source media on the timeline.");
 
-  // Segmentation mode: "clip" (default) phrases on pauses within each clip —
-  // best after silences/cuts shaped the timeline. "words" chunks caption-style
-  // (sentence enders + a word cap) so an UNCUT recording still yields readable
-  // sentence-sized segments with exact timings.
-  const captionMode = opts.segmentMode === "words";
+  // Segmentation is SENTENCE-LEVEL, independent of how the silence pass shaped
+  // the clips: one segment per sentence, pause (>= PHRASE_GAP_SEC) or cut-off
+  // word, with a word cap for punctuation-less run-ons. A clip that repeats a
+  // line several times with no pause between attempts still splits into its
+  // attempts (sentence enders + cut-off dashes), so a retake is never hidden
+  // inside one big "keep". The clip only bounds a segment (never crosses a cut);
+  // where the CUT lands is decided at apply time (cutplan.js), not here.
   const maxWords = Math.max(4, Number(liveEnv("EDITAGENT_SEGMENT_WORDS")) || 24);
 
   const segments = [];
@@ -116,6 +136,12 @@ export async function buildReview(ctx, opts = {}, onProgress = () => {}) {
   }
 
   const wordsByMedia = new Map();
+  const envByMedia = new Map();
+  const soundThreshold = (() => {
+    const raw = String(liveEnv("EDITAGENT_CUT_THRESHOLD_DB") || "").trim().toLowerCase();
+    if (raw === "off" || raw === "0" || raw === "false") return null; // sounds off with the envelope
+    return raw ? Number(raw) : NaN;
+  })();
   for (const clip of clips) {
     if (isAborted(ctx)) throw new Error("Cancelled");
     if (!clip.speedIsNormal) {
@@ -136,12 +162,30 @@ export async function buildReview(ctx, opts = {}, onProgress = () => {}) {
     // Slice the source words to THIS clip's window, then phrase within the clip
     // so a segment never spans a cut the silence pass already made.
     const clipWords = sliceWordsToWindow(wordsByMedia.get(clip.mediaPath), clip.sourceIn.seconds, clip.sourceOut.seconds);
-    const phrases = captionMode
-      ? groupIntoCaptionChunks(clipWords, { maxWords, gapSec: PHRASE_GAP_SEC })
-      : groupIntoPhrases(clipWords, PHRASE_GAP_SEC);
+    let phrases = groupIntoCaptionChunks(clipWords, { maxWords, gapSec: PHRASE_GAP_SEC });
+    // Sounds the transcript missed (throat clears, coughs, noise) come from the
+    // loudness envelope and get segments of their own. Cached like the silence
+    // scan; a silent resync (cacheOnly) never runs ffmpeg for it.
+    if (soundThreshold !== null) {
+      if (!envByMedia.has(clip.mediaPath)) {
+        let env = null;
+        try {
+          onProgress(`Reading loudness: ${clip.mediaPath.split(/[\\\/]/).pop()}…`);
+          const { envelope } = await getLevels(clip.mediaPath, { cacheDir: ctx.cacheDir, cacheOnly: !!opts.cacheOnly });
+          env = makeEnv(envelope, soundThreshold);
+        } catch (e) {
+          log(`sounds: no loudness envelope for ${clip.mediaPath} (${e.message})`);
+        }
+        envByMedia.set(clip.mediaPath, env);
+      }
+      const env = envByMedia.get(clip.mediaPath);
+      if (env) phrases = addSoundPhrases(phrases, findUnrecognizedSounds(env, clipWords, clip.sourceIn.seconds, clip.sourceOut.seconds));
+    }
     for (const part of partitionClip(clip, phrases)) {
       const r = sourceRangeToTimelineFrames(part.start, part.end, clip, seq.timebase);
       if (!r || r.endFrame - r.startFrame < 1) continue;
+      const fillers = fillerStats(clipWords, { sourceInSec: part.start, sourceOutSec: part.end }, DEFAULT_FILLERS);
+      const pauses = transcriptPauses(clipWords, part.start, part.end, part.start <= clip.sourceIn.seconds + 1e-3);
       segments.push({
         clipId: clip.id,
         // Source range + track — STABLE identity used by reconcile() to find this
@@ -151,7 +195,7 @@ export async function buildReview(ctx, opts = {}, onProgress = () => {}) {
         sourceInSec: round3(part.start),
         sourceOutSec: round3(part.end),
         // Speech extent inside the tile (source seconds) — null for no-speech
-        // segments. Drives the "Remove excess" trim on apply.
+        // segments. Feeds the cut-edge planner on apply.
         sourceSpeechInSec: part.speechStart != null ? round3(part.speechStart) : null,
         sourceSpeechOutSec: part.speechEnd != null ? round3(part.speechEnd) : null,
         trackType: clip.trackType,
@@ -163,6 +207,11 @@ export async function buildReview(ctx, opts = {}, onProgress = () => {}) {
         durationSec: round3(r.endSeconds - r.startSeconds),
         text: part.text,
         wordCount: part.wordCount,
+        // Filler words (um, uh...) inside the tile: what "Remove fillers" would cut.
+        fillerCount: fillers.count,
+        fillerSec: fillers.sec,
+        // Transcript gaps (seconds) inside the tile, for the panel's pause estimate.
+        pauses,
         speaker: part.speaker != null ? `S${part.speaker}` : null,
         decision: "keep",
         protected: false,
@@ -190,7 +239,11 @@ export async function buildReview(ctx, opts = {}, onProgress = () => {}) {
     carryOverMarks(ctx.review.segments, deduped);
   }
 
-  ctx.review = { sequence: seq.name, frameRate: seq.frameRate, dropFrame: seq.dropFrame, segments: deduped, skipped, fragments, segmentMode: captionMode ? "words" : "clip", track: opts.track && opts.track !== "auto" ? String(opts.track).toUpperCase() : null };
+  // Source-time words per media stay server-side (never pushed to the panel):
+  // apply needs them to place filler cuts between the right words.
+  const wordsOut = {};
+  for (const [mediaPath, words] of wordsByMedia) wordsOut[normPath(mediaPath)] = words;
+  ctx.review = { sequence: seq.name, frameRate: seq.frameRate, dropFrame: seq.dropFrame, segments: deduped, skipped, fragments, wordsByMedia: wordsOut, track: opts.track && opts.track !== "auto" ? String(opts.track).toUpperCase() : null };
   return ctx.review;
 }
 
@@ -256,16 +309,35 @@ export function dedupeStackedSegments(segments) {
   return out;
 }
 
+/**
+ * Gaps of no transcript token inside one tile, in seconds: between consecutive
+ * tokens, after the last token to the tile end, and (for a clip's first tile)
+ * from the clip start to the first token. Only gaps >= 0.15 s, rounded. The
+ * panel sums those above the user's pause setting for its "~Xs pauses" estimate.
+ */
+export function transcriptPauses(words, inSec, outSec, atClipHead = false) {
+  const toks = [];
+  for (const w of words || []) {
+    if (w.start == null || (w.type || "word") === "spacing") continue;
+    const end = w.end != null ? w.end : w.start;
+    const mid = (w.start + end) / 2;
+    if (mid >= inSec && mid <= outSec) toks.push({ start: w.start, end });
+  }
+  toks.sort((a, b) => a.start - b.start);
+  const out = [];
+  const add = (g) => { if (g >= 0.15) out.push(Math.round(g * 100) / 100); };
+  if (!toks.length) { if (atClipHead) add(outSec - inSec); return out; }
+  if (atClipHead) add(toks[0].start - inSec);
+  for (let i = 1; i < toks.length; i++) add(toks[i].start - toks[i - 1].end);
+  add(outSec - toks[toks.length - 1].end);
+  return out;
+}
+
 export function requireReview(ctx) {
   if (!ctx.review || !ctx.review.segments || !ctx.review.segments.length) {
     throw new Error("No segments loaded yet. Run ppro_get_retake_segments (or click “Transcribe” in the panel) first.");
   }
   return ctx.review;
-}
-
-/** Normalize a media path for cross-platform comparison (mirrors premiere.jsx samePath). */
-function normPath(p) {
-  return String(p == null ? "" : p).replace(/\\/g, "/").toLowerCase();
 }
 
 /**
@@ -386,64 +458,59 @@ export function markDecisions(ctx, decisions = []) {
   return { ...summarize(review), changed };
 }
 
-/* ===================== "Remove excess" — trim non-speech inside keeps =====================
- * Segments tile each clip, so a kept segment can carry minutes of dead air around its
- * words (the classic case: the last phrase of a recording followed by silence until the
- * clip ends). With the panel's "Remove excess" toggle (or trim_excess on the MCP tool),
- * apply ALSO cuts the leading/trailing non-speech inside every kept speech segment,
- * leaving only the spoken spans (plus a little air). Pure + unit-tested. */
+/* ===================== Apply: cuts with edges placed in the quiet =====================
+ * Segments TILE each clip (a tile's edge is the next sentence's first word), which is the
+ * right shape for REVIEW but the wrong place to CUT: a word's timestamp sits inside the
+ * word (see cutplan.js for the measurements), so cutting on a tile edge clips the first
+ * letters of the kept sentence. Apply therefore plans its spans from the marks:
+ *   - a run of Cut tiles becomes one span whose edges sit in the quiet next to the
+ *     neighbouring kept words (marginBefore of air ahead of a kept onset, marginAfter
+ *     behind a kept word end), found on the loudness envelope of the source file;
+ *   - "Remove pauses" (trimPauses, pauseMinSec) also shrinks every real pause longer than
+ *     the user's setting inside the kept speech, between words as much as between sentences;
+ *   - "Remove fillers" (removeFillers) also cuts um/uh/... out of kept sentences.
+ * Spans are mapped onto the LIVE timeline by media + track + source overlap right
+ * before deleting (stored frames go stale after the first ripple). */
 
-const TRIM_EXCESS_PAD_SEC = 0.15; // air kept around the words (panel mirrors this literal)
-const TRIM_EXCESS_MIN_SEC = 0.2; // spans shorter than this aren't worth a cut (panel mirrors this literal)
+function marginSec(envKey, def) {
+  const v = Number(liveEnv(envKey));
+  return Number.isFinite(v) && v >= 0 ? v / 1000 : def;
+}
 
 /**
- * Frame ranges of non-speech inside KEPT speech segments, in LIVE timeline frames.
- * Only "present" (fully intact) segments are trimmed: a partial segment's live span
- * no longer maps 1:1 onto its source range, and re-running after a trim leaves the
- * segment partial, which makes this naturally idempotent. Cut, protected, and
- * no-speech segments are skipped (cuts go wholesale; protected means hands off;
- * a deliberately KEPT no-speech segment is the user's call, not excess).
+ * Loudness envelopes for the review's source files, wrapped with the speech
+ * threshold (EDITAGENT_CUT_THRESHOLD_DB, else the speech-anchored estimate).
+ * Cached per file like the Remove Silences scan; a file that cannot be scanned
+ * (ffmpeg missing, media offline) simply gets timestamp-based edges.
  */
-export function computeExcessRanges(segments, map, fps, opts = {}) {
-  const pad = opts.padSec != null ? opts.padSec : TRIM_EXCESS_PAD_SEC;
-  const minSpan = opts.minSpanSec != null ? opts.minSpanSec : TRIM_EXCESS_MIN_SEC;
-  const byIndex = new Map((map || []).map((m) => [m.index, m]));
-  const out = [];
-  for (const s of segments) {
-    if (s.decision === "cut" || s.protected) continue;
-    if (!(s.wordCount > 0) || s.sourceSpeechInSec == null || s.sourceSpeechOutSec == null) continue;
-    const m = byIndex.get(s.index);
-    if (!m || m.state !== "present" || m.liveStartSec == null || m.liveEndSec == null) continue;
-    const live = (srcSec) => m.liveStartSec + (srcSec - s.sourceInSec);
-    const spans = [
-      [m.liveStartSec, live(s.sourceSpeechInSec - pad)], // dead air before the first word
-      [live(s.sourceSpeechOutSec + pad), m.liveEndSec], // dead air after the last word
-    ];
-    for (const [a, b] of spans) {
-      const lo = Math.max(a, m.liveStartSec);
-      const hi = Math.min(b, m.liveEndSec);
-      if (hi - lo < minSpan) continue;
-      const startFrame = Math.round(lo * fps);
-      const endFrame = Math.round(hi * fps);
-      if (endFrame > startFrame) out.push({ index: s.index, startFrame, endFrame, excess: true });
+async function loadEnvelopes(ctx, review, onProgress) {
+  const raw = String(liveEnv("EDITAGENT_CUT_THRESHOLD_DB") || "").trim().toLowerCase();
+  if (raw === "off" || raw === "0" || raw === "false") return {};
+  const thresholdDb = raw ? Number(raw) : NaN;
+  const out = {};
+  const paths = new Map();
+  for (const s of review.segments) if (s.mediaPath != null && !paths.has(normPath(s.mediaPath))) paths.set(normPath(s.mediaPath), s.mediaPath);
+  for (const [key, mediaPath] of paths) {
+    try {
+      onProgress(`Reading loudness: ${String(mediaPath).split(/[\\\/]/).pop()}…`);
+      const { envelope } = await getLevels(mediaPath, { cacheDir: ctx.cacheDir });
+      const env = makeEnv(envelope, thresholdDb);
+      if (env) out[key] = env;
+    } catch (e) {
+      log(`cut edges: no loudness envelope for ${mediaPath} (${e.message}); using transcript timings`);
     }
   }
   return out;
 }
 
 /**
- * Ripple/lift-delete every Cut (non-protected) segment via the batched
- * razor→lift→close path (applyRangesBatched in silences.js) — the old one-
- * removeRange-per-cut loop rippled every downstream clip per cut, O(cuts ×
- * clips) DOM work (~30 min for hundreds of cuts on a long timeline).
- *
- * Frames are RECONCILED from the live timeline right before deleting — the stored
- * startFrame/endFrame go stale the moment the first ripple (or a re-insert) shifts
- * downstream clips, and razoring at stale frames is the classic "razor everywhere,
- * delete nothing" failure. Lift-deletes never shift anything, so all reconciled
- * frames stay valid for the whole batch; the single close pass runs last.
+ * Ripple/lift-delete every Cut (non-protected) segment, plus the pause/filler trims when
+ * asked, via the batched razor→lift→close path (applyRangesBatched in silences.js).
+ * Spans are planned in source time (planCutSpans) and RECONCILED onto the live timeline
+ * right before deleting; lift-deletes never shift anything, so all frames stay valid for
+ * the whole batch and the single close pass runs last.
  */
-export async function applyReview(ctx, { removeGaps = false, trimExcess = false, chunkSize } = {}, onProgress = () => {}) {
+export async function applyReview(ctx, { removeGaps = false, trimPauses = false, pauseMinSec, removeFillers = false, chunkSize } = {}, onProgress = () => {}) {
   const review = requireReview(ctx);
   const ripple = removeGaps === true;
   const { map, timeline } = await reconcile(ctx); // one host read; also the pre-apply snapshot
@@ -456,32 +523,30 @@ export async function applyReview(ctx, { removeGaps = false, trimExcess = false,
   const marked = review.segments.filter((s) => s.decision === "cut" && !s.protected);
   let alreadyGone = 0;
   let alreadyGoneSec = 0;
-  const cuts = marked
-    .map((s) => {
-      const m = byIndex.get(s.index);
-      const startFrame = m && m.liveStartSec != null ? Math.round(m.liveStartSec * fps) : 0;
-      const endFrame = m && m.liveEndSec != null ? Math.round(m.liveEndSec * fps) : 0;
-      if (!m || m.state === "absent" || m.liveStartSec == null || m.liveEndSec == null || !(endFrame > startFrame)) {
-        alreadyGone += 1;
-        alreadyGoneSec += s.durationSec || 0;
-        return null;
-      }
-      return { index: s.index, startFrame, endFrame };
-    })
-    .filter(Boolean);
-
-  // "Remove excess": also cut the non-speech air inside kept speech segments.
-  let excessCuts = [];
-  if (trimExcess) {
-    const envPad = Number(liveEnv("EDITAGENT_TRIM_EXCESS_PAD"));
-    const envMin = Number(liveEnv("EDITAGENT_TRIM_EXCESS_MIN"));
-    excessCuts = computeExcessRanges(review.segments, map, fps, {
-      padSec: Number.isFinite(envPad) ? envPad : undefined,
-      minSpanSec: Number.isFinite(envMin) ? envMin : undefined,
-    });
+  for (const s of marked) {
+    const m = byIndex.get(s.index);
+    if (!m || m.state === "absent" || m.liveStartSec == null || m.liveEndSec == null) {
+      alreadyGone += 1;
+      alreadyGoneSec += s.durationSec || 0;
+    }
   }
 
-  const res = await applyRangesBatched(ctx, cuts.concat(excessCuts), { ripple, fps, chunkSize, timeline, onProgress });
+  const envelopes = marked.length || trimPauses || removeFillers ? await loadEnvelopes(ctx, review, onProgress) : {};
+  const envPause = Number(liveEnv("EDITAGENT_PAUSE_MS"));
+  const spans = planCutSpans(review.segments, {
+    wordsByMedia: review.wordsByMedia || {},
+    envelopes,
+    marginBeforeSec: marginSec("EDITAGENT_CUT_MARGIN_BEFORE_MS", DEFAULT_MARGIN_BEFORE_SEC),
+    marginAfterSec: marginSec("EDITAGENT_CUT_MARGIN_AFTER_MS", DEFAULT_MARGIN_AFTER_SEC),
+    trimPauses,
+    pauseMinSec: Number.isFinite(pauseMinSec) && pauseMinSec >= 0 ? pauseMinSec : Number.isFinite(envPause) && envPause >= 0 ? envPause / 1000 : DEFAULT_PAUSE_MIN_SEC,
+    removeFillers,
+  });
+  const frames = mapSpansToTimeline(timeline, spans);
+  const pauseSpans = frames.filter((f) => f.kind === "pause").length;
+  const fillerSpans = frames.filter((f) => f.kind === "filler").length;
+
+  const res = await applyRangesBatched(ctx, frames, { ripple, fps, chunkSize, timeline, onProgress });
   const applied = res.applied;
   if (applied > 0) {
     ctx.state.revision += 1;
@@ -498,7 +563,9 @@ export async function applyReview(ctx, { removeGaps = false, trimExcess = false,
     undoable: applied > 0 && !!timeline && !res.rebuild,
     requested: res.requested,
     cutsMarked: marked.length,
-    excessSpans: excessCuts.length,
+    pauseSpans,
+    fillerSpans,
+    refined: Object.keys(envelopes).length > 0,
     alreadyGone,
     alreadyGoneSec: round3(alreadyGoneSec),
     errors: res.errors.length ? res.errors : undefined,

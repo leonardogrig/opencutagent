@@ -186,9 +186,10 @@ After changing server code, restart the Claude session (or `/mcp` → reconnect 
 3. **Review**: click a segment to expand; flip **Keep ⇄ Cut**, or **Protect** it so nothing ever cuts it. Overrides show a *Manual* badge. The list follows the playhead; clicking a segment's time seeks Premiere.
 4. Optional extras before applying:
    - **Soft Apply** lays colored markers instead of deleting (green = suggested keeper); **Clear markers** removes only OpenCutAgent's markers.
-   - **Remove excess (keep speech only)** also trims the dead air inside kept segments.
+   - **Remove pauses longer than [ms]** also shrinks every stretch of no speech longer than your setting inside the kept speech (between words too), leaving about 0.12 s of air on each side.
+   - **Remove fillers (um, uh)** (on by default) also cuts filler words out of kept segments.
    - **Export transcript** saves the kept speech as an `.srt`.
-5. **Apply All**. "Remove gaps when applying" picks ripple vs lift. Large ripple applies (100+ cuts) build a **new sequence named `<sequence> - tightened`** via XML round-trip (fast, effects preserved); the original sequence is untouched, so "undo" there is just deleting the new one. Smaller applies edit in place and support **Undo last apply** / Cmd+Z.
+5. **Apply All**. Every cut point is placed in the quiet between words, refined against the recording's loudness with a margin of air kept around the kept speech, so a kept sentence never starts mid-word. "Remove gaps when applying" picks ripple vs lift. Large ripple applies (100+ cuts) build a **new sequence named `<sequence> - tightened`** via XML round-trip (fast, effects preserved); the original sequence is untouched, so "undo" there is just deleting the new one. Smaller applies edit in place and support **Undo last apply** / Cmd+Z.
 
 Or just ask in chat (Sync mode): *"analyze the retakes on my timeline and cut the duplicates"*, *"remove the silences"*, *"what's on the timeline?"*, *"trim V1.2 so it ends at 00:00:18:00"*. The `premiere-edit` skill runs a read → propose → confirm → execute → verify loop and previews destructive cuts before applying.
 

@@ -863,3 +863,16 @@ button.reinsert:hover:not(:disabled) { background: var(--accent-hover); border-c
   *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
   .topbar.active .topbar-fill { opacity: 1; left: 0; width: 100%; }
 }
+
+/* "Remove pauses longer than [250] ms": a compact number field inline in a .chk label */
+.chk.pause { flex-wrap: wrap; }
+.chk .inp.inline {
+  display: inline-flex; align-items: center; gap: 4px; margin: 0 2px;
+  background: var(--surface-1); border: 1px solid var(--border-default); border-radius: var(--r-md);
+  padding: 1px 6px;
+}
+.chk .inp.inline input[type="number"] { width: 4.5em; background: transparent; border: 0; color: inherit; font: inherit; text-align: right; padding: 0; }
+.chk .inp.inline input[type="number"]:focus { outline: none; }
+.chk .inp.inline:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
+.chk .inp.inline .unit { opacity: 0.7; font-size: 0.92em; }
+

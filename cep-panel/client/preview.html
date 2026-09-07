@@ -264,7 +264,6 @@
           <div class="statusrow">
             <div class="statusbar">Claude marked 3 segment(s) to cut. Review below, then Apply All.</div>
             <label class="selctl"><span>Track</span><select><option selected>A1 (19)</option><option>A2 (4)</option></select></label>
-            <label class="chk follow"><input type="checkbox" class="switch" checked /> Generated segments</label>
             <label class="chk follow"><input type="checkbox" class="switch" checked /> Follow playhead</label>
           </div>
           <div class="segments">
@@ -299,7 +298,7 @@
               <div class="seg-group-body">
                 <div class="seg cut absent"><div class="seg-main"><span class="seg-dot" style="background:#f06595"></span><span class="seg-time">5:15</span><span class="seg-text">Copy this OATH.</span><span class="seg-badges"><span class="badge removed">Removed</span><span class="badge cut">Cut</span></span></div></div>
                 <div class="seg cut absent open"><div class="seg-main"><span class="seg-dot" style="background:#f06595"></span><span class="seg-time">5:16</span><span class="seg-text">And replace it, and this time the whole line is visible because the expanded row un-truncates in place,</span><span class="seg-badges"><span class="badge removed">Removed</span><span class="badge cut">Cut</span></span></div>
-                  <div class="seg-detail"><div class="seg-meta">5:16 – 5:17 · duplicate take</div><div class="seg-actions"><button class="reinsert"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6.7 3L3 13"/></svg><span class="lbl">Re-insert</span></button></div></div>
+                  <div class="seg-detail"><div class="seg-meta">5:16.240 - 5:17.085 · duplicate take</div><div class="seg-actions"><button class="reinsert"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6.7 3L3 13"/></svg><span class="lbl">Re-insert</span></button></div></div>
                 </div>
                 <div class="seg cut absent"><div class="seg-main"><span class="seg-dot" style="background:#f06595"></span><span class="seg-time">5:17</span><span class="seg-text">and replace it w…</span><span class="seg-badges"><span class="badge removed">Removed</span><span class="badge cut">Cut</span></span></div></div>
               </div>
@@ -307,7 +306,8 @@
           </div>
           <div class="footer">
             <label class="chk"><input type="checkbox" checked /> Remove gaps when applying (ripple)</label>
-            <label class="chk"><input type="checkbox" /> Remove excess (keep speech only)</label>
+            <label class="chk pause"><input type="checkbox" checked /> Remove pauses longer than <span class="inp inline"><input type="number" value="250" /><span class="unit">ms</span></span></label>
+            <label class="chk"><input type="checkbox" checked /> Remove fillers (um, uh)</label>
             <div class="apply-row">
               <button><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41 13.42 20.6a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><circle cx="7.5" cy="7.5" r="1.5"/></svg><span class="lbl">Soft Apply</span></button>
               <button class="primary"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span class="lbl">Apply All</span></button>

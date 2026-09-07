@@ -41,9 +41,9 @@ The panel is ONLY a ws client. Nothing works until `server/index.js` listens on 
 ## Retake workflow (Sync mode)
 
 1. `ppro_get_timeline_state` returns data = connected.
-2. `ppro_get_retake_segments` populates `ctx.review`. Judge the segments yourself: keep the most complete pass of each serial-restart run; distinct next-points may yield several keepers per beat; cut fragments and false starts. No-speech segments are auto-cut deterministically, not your call.
+2. `ppro_get_retake_segments` populates `ctx.review` (one segment per sentence, pause, cut-off word, immediate word-for-word repeat, or capitalised sentence starter; Scribe audio events and loudness-detected "(unrecognized sound)" stretches are their own word-empty, auto-cut segments; the "Generated segments" clip mode is gone). Judge the segments yourself: keep the most complete pass of each serial-restart run; distinct next-points may yield several keepers per beat; cut fragments and false starts. No-speech segments are auto-cut deterministically, not your call.
 3. `ppro_mark_retakes` in one batched call.
-4. `ppro_apply_retakes` (`remove_gaps:true` = ripple) or the panel's Apply All.
+4. `ppro_apply_retakes` (`remove_gaps:true` = ripple, `remove_fillers:true` = also cut um/uh) or the panel's Apply All. You pick WHICH segments go; the server places every cut edge in the quiet between words (`server/cutplan.js`).
 5. **Verify by re-reading the timeline** (clip count + duration). "applied X/X" counts host calls, not deletions.
 
 Apply ladder for big cuts: FCP7-XML round-trip (preserves effects, makes a NEW "… - tightened" sequence, not undoable) -> generated XML rebuild -> in-place razor/lift/close batches. A failed razor apply = a sliced timeline; recover with New Sequence From Clip, do not undo hundreds of steps. A "Translation Report" alert on apply is benign (from the XML export step).
@@ -68,6 +68,7 @@ Apply ladder for big cuts: FCP7-XML round-trip (preserves effects, makes a NEW "
 
 **Server and editing semantics**
 - Reconcile on media + track + source-overlap, **never `clipId`** (renumbers after a razor). Stored `startFrame/endFrame` go stale after any ripple; apply and export always reconcile live.
+- **Never cut on a raw transcript timestamp.** Scribe word starts sit ~50-240 ms AFTER the real onset and word ends ~180 ms BEFORE the voice stops, so a cut on a segment tile edge clips the kept sentence's first letters. Segment tiles are the review unit only; `cutplan.js planCutSpans` places every edge in the quiet between words on the loudness envelope (margin of air on the kept side, lowest-energy window in continuous speech, timestamp pads only when no envelope). Keep new trims (pauses, fillers) on that path.
 - Only true 29.97/59.94 are drop-frame; "30 fps" is often 30.00003 non-drop.
 - Transcription is per source FILE (cached, ranged islands, batched concat), never per clip. Reload reuses cache; `cacheOnly` paths must never bill. `scribe_v2` only.
 - Silence meter: normalized peak metering, hard -60 floor, keepTalk demotion unconditional on length. Keep server `detectSilences`/`estimateThreshold` and the panel mirrors in sync (`test/silence.js` pins both). Do not re-add the isolation guard or "minimum time between cuts".

@@ -164,10 +164,11 @@ function memoSet(outPath, env) {
 
 /**
  * Loudness envelope for a source file, cached on disk under <cacheDir>/levels/.
- * Returns { envelope, cached, path }.
+ * Returns { envelope, cached, path }. `cacheOnly` returns { envelope: null }
+ * instead of running ffmpeg when nothing is cached (for silent resyncs).
  */
 export async function getLevels(mediaPath, opts = {}) {
-  const { cacheDir, refresh = false } = opts;
+  const { cacheDir, refresh = false, cacheOnly = false } = opts;
   if (!existsSync(mediaPath)) {
     throw new LevelsError(`Source media not found on disk: ${mediaPath}`);
   }
@@ -190,6 +191,7 @@ export async function getLevels(mediaPath, opts = {}) {
         /* fall through and re-extract */
       }
     }
+    if (cacheOnly) return { envelope: null, cached: false, path: outPath };
   }
 
   log(`extracting loudness: ${basename(mediaPath)}`);

@@ -47,12 +47,47 @@ export function groupIntoPhrases(words, silenceThreshold = 0.5) {
 // A sentence ends on . ! ? or … (closing quotes/brackets allowed after).
 const SENTENCE_END_RE = /[.!?…]["'”’)\]]*$/;
 
+// A token that trails off mid-word: Scribe writes the abandoned word with a
+// trailing dash ("compar--", "significan-", "It--"). That is the speaker
+// restarting, so the take that was abandoned ends right there.
+const CUTOFF_RE = /[-\u2013\u2014]+$/;
+export function isCutoffToken(text) {
+  const t = String(text || "").trim();
+  return t.length > 1 && CUTOFF_RE.test(t);
+}
+
+// Words that are capitalised ONLY at the start of a sentence. Scribe often
+// capitalises a new sentence without closing the previous one ("with this
+// price And by the way"), so a capitalised starter after an unpunctuated word
+// is a sentence boundary. Proper nouns are not on this list, and neither is
+// "I" (always capitalised), so "talk about Muse Spark" and "and I think" stay whole.
+const SENTENCE_STARTERS = new Set([
+  "and", "but", "so", "now", "then", "okay", "ok", "also", "because", "if", "when", "while", "after", "before",
+  "this", "that", "these", "those", "here", "there", "what", "which", "why", "how", "where", "who",
+  "we", "we're", "we'll", "you", "you're", "you'll", "it", "it's", "it'll", "they", "they're", "he", "she",
+  "the", "a", "an", "yes", "no", "well", "anyway", "basically", "actually", "alright", "right",
+  "first", "second", "next", "finally", "let's", "let", "look", "remember", "notice", "again", "another",
+  "for", "in", "on", "at", "with", "from", "to", "by", "of", "as", "or", "not", "just", "maybe", "of", "one",
+]);
+const wordKey = (text) => String(text || "").toLowerCase().replace(/[^a-z0-9']/g, "");
+const hasTerminalPunct = (text) => SENTENCE_END_RE.test(String(text || "").trim()) || /[,;:]$/.test(String(text || "").trim());
+
 /**
- * Caption-style grouping (the Retakes "Generated segments OFF" mode): ONE
- * SEGMENT PER SENTENCE. Breaks on pauses and speaker changes like
- * groupIntoPhrases, but the primary break is sentence-ending punctuation
- * (once the chunk holds >= minWords); maxWords is only a safety cap that
- * splits punctuation-less run-on speech. Exact word timings per chunk.
+ * Sentence-level grouping (the Retakes segmentation): ONE SEGMENT PER
+ * SENTENCE, split as finely as the transcript allows so every restart can be
+ * reviewed and removed on its own. Breaks on pauses and speaker changes like
+ * groupIntoPhrases, plus:
+ *  - sentence-ending punctuation (once the chunk holds >= minWords);
+ *  - a CUT-OFF word (trailing dash: the speaker abandoned the line);
+ *  - an IMMEDIATE REPEAT: the next 2..6 words re-say the chunk's last 2..6
+ *    words ("let's talk about, let's talk about"), a restart with no dash
+ *    and no pause, so the new attempt starts a new segment;
+ *  - a capitalised sentence starter after a word with no punctuation
+ *    ("with this price And by the way");
+ *  - audio events ("[clears throat]") stand ALONE as word-empty segments, so
+ *    they are auto-cut instead of riding inside a kept sentence.
+ * maxWords is only a safety cap that splits punctuation-less run-on speech.
+ * Exact word timings per chunk.
  */
 export function groupIntoCaptionChunks(words, opts = {}) {
   return groupTokens(words, {
@@ -60,11 +95,31 @@ export function groupIntoCaptionChunks(words, opts = {}) {
     maxWords: opts.maxWords != null ? opts.maxWords : 24,
     minWords: opts.minWords != null ? opts.minWords : 2,
     sentenceBreak: true,
+    cutoffBreak: opts.cutoffBreak !== false,
+    repeatBreak: opts.repeatBreak !== false,
+    starterBreak: opts.starterBreak !== false,
+    eventsAlone: opts.eventsAlone !== false,
   });
 }
 
-function groupTokens(words, { gapSec = 0.5, maxWords = 0, minWords = 3, sentenceBreak = false } = {}) {
+function groupTokens(words, { gapSec = 0.5, maxWords = 0, minWords = 3, sentenceBreak = false, cutoffBreak = false, repeatBreak = false, starterBreak = false, eventsAlone = false } = {}) {
   const toks = contentTokens(words);
+  // Word tokens only (events skipped) with their positions, for the repeat lookahead.
+  const wordIdx = [];
+  for (let i = 0; i < toks.length; i++) if (toks[i].type !== "audio_event") wordIdx.push(i);
+  const wordPos = new Map(wordIdx.map((ti, wi) => [ti, wi]));
+  // Does the run of k words starting at token i re-say the k words just before it?
+  const repeatsBefore = (i) => {
+    const wi = wordPos.get(i);
+    if (wi == null) return false;
+    for (let k = 2; k <= 6; k++) {
+      if (wi - k < 0 || wi + k > wordIdx.length) break;
+      let same = true;
+      for (let j = 0; j < k && same; j++) same = wordKey(toks[wordIdx[wi - k + j]].text) === wordKey(toks[wordIdx[wi + j]].text);
+      if (same) return k;
+    }
+    return 0;
+  };
   const phrases = [];
   let cur = [];
   let curStart = null;
@@ -80,7 +135,7 @@ function groupTokens(words, { gapSec = 0.5, maxWords = 0, minWords = 3, sentence
       let raw = (t.text || "").trim();
       if (!raw) continue;
       if (t.type === "audio_event") {
-        if (!raw.startsWith("(")) raw = `(${raw})`;
+        if (!/^[(\[]/.test(raw)) raw = `(${raw})`; // Scribe writes "[clears throat]"; keep its brackets
       } else {
         wordCount += 1;
       }
@@ -97,19 +152,32 @@ function groupTokens(words, { gapSec = 0.5, maxWords = 0, minWords = 3, sentence
     curWords = 0;
   };
 
-  for (const t of toks) {
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    const isEvent = t.type === "audio_event";
     if (curSpeaker != null && t.speaker != null && t.speaker !== curSpeaker) flush();
     if (prevEnd != null && t.start - prevEnd >= gapSec) flush();
+    if (eventsAlone && isEvent) flush(); // a sound never joins the sentence before it
+    else if (!isEvent && cur.length && curWords > 0) {
+      const lastWord = [...cur].reverse().find((x) => x.type !== "audio_event");
+      // A restart: the words from here re-say the chunk's last words. Only whole
+      // multi-word runs count, so a stutter ("the the") does not split.
+      const rep = repeatBreak ? repeatsBefore(i) : 0;
+      if (rep && curWords >= rep) flush();
+      else if (starterBreak && curWords >= minWords && lastWord && !hasTerminalPunct(lastWord.text) && /^[A-Z]/.test(String(t.text || "").trim()) && SENTENCE_STARTERS.has(wordKey(t.text))) flush();
+    }
     if (curStart == null) {
       curStart = t.start;
       curSpeaker = t.speaker;
     }
     cur.push(t);
-    if (t.type !== "audio_event") curWords += 1;
+    if (!isEvent) curWords += 1;
     prevEnd = t.end;
+    if (eventsAlone && isEvent) { flush(); continue; }
     // Caption-mode breaks close AFTER the word that triggers them, so the
     // punctuation (or the cap-hitting word) stays in its own chunk.
-    if (sentenceBreak && curWords >= minWords && t.type !== "audio_event" && SENTENCE_END_RE.test((t.text || "").trim())) flush();
+    if (cutoffBreak && !isEvent && isCutoffToken(t.text)) flush(); // an abandoned word ends its take, however short
+    else if (sentenceBreak && curWords >= minWords && t.type !== "audio_event" && SENTENCE_END_RE.test((t.text || "").trim())) flush();
     else if (maxWords > 0 && curWords >= maxWords) flush();
   }
   flush();

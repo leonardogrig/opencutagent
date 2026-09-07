@@ -53,7 +53,7 @@ When the user wants to cut re-recorded takes / false starts / duplicate lines (c
 2. **Analyze them yourself** (the judgment — see "How to judge retakes" below). Decide a **keep** or **cut** for every segment.
 3. **`ppro_mark_retakes`** → send ALL decisions in **one** call: `[{index, decision:"cut", group, reason}]`. Use a shared `group` id per beat (colors the panel's retake clusters). Keepers stay keep by default — you only need to send the cuts. For hundreds of segments, **generate the cut list with a script** (define beats as `[start,end]`+keepers, emit every non-keeper) rather than hand-typing — it's accurate and fast. Marks appear live in the panel; nothing is edited yet.
 4. **User reviews** the Keep/Cut marks in the panel and flips/Protects anything.
-5. **Apply** — `ppro_apply_retakes` (confirm first) or the panel's **Apply All**. `remove_gaps:true` ripples (closes the gaps → tight cut); false lifts (leaves gaps). `trim_excess:true` ALSO cuts the non-speech air inside kept segments (leading/trailing dead air around the words, ~0.15s pad kept) so only the spoken spans survive — segments tile whole clips, so a keep can hide minutes of silence after its last word (panel equivalent: the "Remove excess" checkbox). `Cmd+Z` undoes.
+5. **Apply** — `ppro_apply_retakes` (confirm first) or the panel's **Apply All**. `remove_gaps:true` ripples (closes the gaps → tight cut); false lifts (leaves gaps). Cut points never sit on a raw word timestamp: the server places every edge in the quiet between words (loudness-refined, ~0.12s of air kept on the kept side), so you only decide WHICH segments go. `trim_pauses:true` (+ `max_pause_ms`, default 250) ALSO shrinks every real pause longer than that inside the kept speech, between words as much as between sentences and at clip edges, to ~0.12s of air per side — segments tile whole clips, so a keep can hide minutes of silence after its last word (panel equivalent: the "Remove pauses longer than" checkbox + ms field). `remove_fillers:true` ALSO cuts filler words (um, uh, er, hmm) out of kept segments (panel equivalent: "Remove fillers", on by default there); offer it when the user wants a tight cut. `Cmd+Z` undoes.
 
 Efficiency notes: one big `get` + one big `mark` beats many small calls. Don't re-transcribe (cached). Protected segments are never cut. Report the keep/cut/removed-seconds summary the tool returns.
 
@@ -105,9 +105,9 @@ So a region can have **several keepers** — one clean pass per distinct point. 
 - `ppro_remove_gaps` — ripple-close empty gaps.
 - `ppro_remove_silences` — transcribe → cut list (silences + fillers) → ripple-delete. `dry_run` first, always.
 - `ppro_analyze_audio_levels` / `ppro_remove_silences_by_level` — **loudness-based** silence removal (no transcription) for the Remove Silences panel + "Suggest threshold". See the **remove-silences** skill. Prefer these for "cut the dead air"; use `ppro_remove_silences` when the goal is filler words.
-- `ppro_get_retake_segments` — transcribe → indexed segments for YOU to analyze for retakes/duplicates.
+- `ppro_get_retake_segments` — transcribe → indexed sentence segments (one per sentence, pause, cut-off word, immediate repeat or capitalised restart; throat clears and other non-word sounds are their own auto-cut segments) for YOU to analyze for retakes/duplicates.
 - `ppro_mark_retakes` — record your keep/cut decisions (one batch); pushes them live to the panel.
-- `ppro_apply_retakes` — apply the current marks (ripple/lift-delete the Cut segments; `trim_excess` also trims non-speech inside keeps). Confirm first.
+- `ppro_apply_retakes` — apply the current marks (ripple/lift-delete the Cut segments with loudness-refined edges; `trim_pauses` + `max_pause_ms` also shrink pauses inside keeps; `remove_fillers` also cuts um/uh). Confirm first.
 - `ppro_run_script` — escape hatch for raw ExtendScript. Last resort.
 
 Detailed parameters, edge cases, and recovery steps are in `reference/timeline-ops.md` — read it when a tool errors or you need an operation the six tools don't cover.

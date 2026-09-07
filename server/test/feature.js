@@ -1,7 +1,7 @@
 // Unit checks for the retake-review logic (no Premiere / network):
 // markDecisions (protected respected, summary) + applyReview (ordering, ripple)
 // + the panel applyDecisions RPC path.
-import { markDecisions, applyReview, summarize, computeExcessRanges } from "../review.js";
+import { markDecisions, applyReview, summarize } from "../review.js";
 import { createRpcDispatcher } from "../rpc/index.js";
 import { fmtDur, fmtElapsed } from "../tools/util.js";
 import { augmentPath, commonBinDirs, ffmpegBin, ffmpegMissingMessage, mergePath } from "../paths.js";
@@ -78,58 +78,47 @@ check("one batch call, ranges ascending", ctx.calls[0].ranges && ctx.calls[0].ra
 check("removeGaps → one closeRangeGaps pass", ctx.calls.length === 2 && ctx.calls[1].ranges.length === 2, ctx.calls);
 check("protected frame 40 not cut", !ctx.calls[0].ranges.some((r) => r.startFrame === 40), ctx.calls[0].ranges);
 
-// --- computeExcessRanges: trim non-speech air inside keeps ---
-{
-  const map = [
-    { index: 0, state: "present", liveStartSec: 0, liveEndSec: 3 },
-    { index: 1, state: "present", liveStartSec: 3, liveEndSec: 5 },
-    { index: 2, state: "present", liveStartSec: 5, liveEndSec: 8 },
-    { index: 3, state: "absent", liveStartSec: null, liveEndSec: null },
-  ];
-  const segs = [
-    // speech 0.5..2.0 inside [0,3]s → lead [0,0.35] + trail [2.15,3] both ≥ 0.2s
-    srcSeg(0, 0, 90, { wordCount: 3, speechIn: 0.5, speechOut: 2.0 }),
-    // cut segment: never excess-trimmed (it goes wholesale)
-    srcSeg(1, 90, 150, { decision: "cut", wordCount: 2, speechIn: 3.2, speechOut: 4.5 }),
-    // no-speech keep: user's call, not excess
-    srcSeg(2, 150, 240, { wordCount: 0 }),
-    // absent: can't trim what isn't there
-    srcSeg(3, 240, 300, { wordCount: 2, speechIn: 8.5, speechOut: 9.0 }),
-  ];
-  const ex = computeExcessRanges(segs, map, 30);
-  check("excess: two spans around the words", ex.length === 2, ex);
-  check("excess: lead span [0,0.35]s", ex[0].startFrame === 0 && Math.abs(ex[0].endFrame - Math.round(0.35 * 30)) <= 1, ex[0]);
-  check("excess: trail span ends at segment end", ex[1].endFrame === 90 && Math.abs(ex[1].startFrame - Math.round(2.15 * 30)) <= 1, ex[1]);
-  check("excess: cut/empty/absent all skipped", !ex.some((r) => r.index !== 0), ex);
-  // tiny air below the minimum span is left alone
-  const tight = computeExcessRanges([srcSeg(0, 0, 90, { wordCount: 3, speechIn: 0.2, speechOut: 2.9 })], map, 30);
-  check("excess: sub-minimum spans skipped", tight.length === 0, tight);
-  // protected keeps are hands-off
-  const prot = computeExcessRanges([srcSeg(0, 0, 90, { wordCount: 3, speechIn: 0.5, speechOut: 2.0, protected: true })], map, 30);
-  check("excess: protected untouched", prot.length === 0, prot);
-}
-
-// --- applyReview + applyDecisions with trimExcess: cuts AND excess spans apply together ---
+// --- applyReview + applyDecisions with trimPauses: cuts AND pause spans apply together ---
 {
   const tctx = makeCtx();
-  // Timeline covers [0,3]s. One keep with speech 0.5..2.0 (excess both sides), one cut 2.5..3.0.
+  // Timeline covers [0,3]s. One keep with speech 0.5..2.0 (air both sides), one cut 2.5..3.0.
   tctx.review.segments = [
     srcSeg(0, 0, 75, { wordCount: 3, speechIn: 0.5, speechOut: 2.0 }),
     srcSeg(1, 75, 90, { decision: "cut" }),
   ];
-  const t = await applyReview(tctx, { removeGaps: true, trimExcess: true });
-  check("trimExcess: excess spans counted", t.excessSpans === 2, t);
-  // trail excess [2.15,2.5]s touches the cut [2.5,3.0]s → mergeFrameRanges folds them
-  check("trimExcess: lead + merged trail-and-cut requested", t.requested === 2 && t.appliedSec === 1.2, t);
+  const t = await applyReview(tctx, { removeGaps: true, trimPauses: true, pauseMinSec: 0.2 });
+  // No envelope in tests (m.mp4 is not on disk) → timestamp pads: the cut after the keep
+  // starts 0.3s behind its last word (2.3s); the head pause runs to 0.25s before the first
+  // word and is cut to 0.12s before that (0.13s). The keep's trailing air is shaped by the cut edge.
+  check("trimPauses: head pause counted, tail air handled by the cut edge", t.pauseSpans === 1, t);
+  check("trimPauses: head pause [0,0.13]s + cut [2.3,3.0]s requested", t.requested === 2 && Math.abs(t.appliedSec - (4 + 21) / 30) < 0.01, t);
+  check("trimPauses: no envelope on disk -> not refined", t.refined === false, t);
+  check("trimPauses: cut edge sits 0.3s behind the kept word, not on the tile edge", tctx.calls[0].ranges.some((r) => r.startFrame === 69 && r.endFrame === 90), tctx.calls[0].ranges);
   const t2ctx = makeCtx();
-  t2ctx.review.segments = [srcSeg(0, 0, 75, { wordCount: 3, speechIn: 0.5, speechOut: 2.0 })];
+  t2ctx.review.segments = [srcSeg(0, 0, 75, { wordCount: 3, speechIn: 0.5, speechOut: 1.9 })];
   const d2 = createRpcDispatcher(t2ctx);
-  const tr = await d2("applyDecisions", { segments: [], removeGaps: true, trimExcess: true }, { progress: () => {} });
-  check("panel trim-only apply works with zero cuts", tr.applied === 2 && /excess non-speech trim/.test(tr.message), tr);
+  const tr = await d2("applyDecisions", { segments: [], removeGaps: true, trimPauses: true, pauseMs: 200 }, { progress: () => {} });
+  check("panel pause-only apply works with zero cuts (head + tail)", tr.applied === 2 && /2 pause trim/.test(tr.message), tr);
+  const t2b = makeCtx();
+  t2b.review.segments = [srcSeg(0, 0, 75, { wordCount: 3, speechIn: 0.5, speechOut: 1.9 })];
+  const tb = await createRpcDispatcher(t2b)("applyDecisions", { segments: [], removeGaps: true, trimPauses: true, pauseMs: 1000 }, { progress: () => {} });
+  check("panel pause setting gates the trim (1000 ms -> nothing)", tb.applied === 0 && /no pauses found/.test(tb.message), tb);
+  // Remove fillers rides the same apply: a kept segment with an "um" between its words.
+  const fctx = makeCtx();
+  fctx.review.segments = [srcSeg(0, 0, 90, { wordCount: 3, speechIn: 0.5, speechOut: 2.5 })];
+  fctx.review.wordsByMedia = { "m.mp4": [
+    { type: "word", text: "one", start: 0.5, end: 0.8 }, { type: "word", text: "um", start: 1.2, end: 1.4 }, { type: "word", text: "two", start: 2.0, end: 2.5 },
+  ] };
+  const df = createRpcDispatcher(fctx);
+  const fr = await df("applyDecisions", { segments: [], removeGaps: true, removeFillers: true }, { progress: () => {} });
+  check("panel filler-only apply cuts the um (no envelope: 0.3s after 'one' to 0.25s before 'two')", fr.applied === 1 && fr.fillerSpans === 1 && /1 filler word cut/.test(fr.message), fr);
+  check("filler cut frames [1.1,1.75]s", fctx.calls[0].ranges[0].startFrame === 33 && fctx.calls[0].ranges[0].endFrame === Math.round(1.75 * 30), fctx.calls[0].ranges);
+  const fr0 = await df("applyDecisions", { segments: [], removeGaps: true, removeFillers: false }, { progress: () => {} });
+  check("filler toggle off -> nothing to apply", fr0.applied === 0 && /No segments are marked Cut/.test(fr0.message), fr0);
   const t3ctx = makeCtx(); // nothing marked, nothing to trim (segments have no speech extents)
   const d3 = createRpcDispatcher(t3ctx);
-  const tr3 = await d3("applyDecisions", { segments: [], removeGaps: true, trimExcess: true }, { progress: () => {} });
-  check("trim-on but no work explains both", /no excess non-speech/.test(tr3.message), tr3.message);
+  const tr3 = await d3("applyDecisions", { segments: [], removeGaps: true, trimPauses: true }, { progress: () => {} });
+  check("trim-on but no work explains both", /no pauses found/.test(tr3.message), tr3.message);
 }
 
 // --- applyReview: cuts already gone from the timeline are counted, not silently dropped ---
