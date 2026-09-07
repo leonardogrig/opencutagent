@@ -1,10 +1,12 @@
 // Final render + Premiere placement for an animation job. The agent never
 // renders the deliverable — the server does, with pinned encoder settings:
+//  - audio is OFF unless the job's style declared it makes its own (job.audio);
+//    then the render is un-muted and the finishing pass keeps an AAC track.
 //  - solid bg  -> Remotion h264 (PNG frames, CRF 14) then an ffmpeg ALL-INTRA
 //    transcode (-g 1 -bf 0). Premiere's long-GOP H.264 decoder is unreliable
 //    ("Error retrieving frame"), and all-intra edits flawlessly.
 //  - transparent -> Remotion ProRes 4444 with alpha (.mov), already all-intra;
-//    just remuxed with -an so no silent audio track reaches the timeline.
+//    just remuxed (with -an, so no silent audio track reaches the timeline).
 // Every render gets a NEW versioned filename: re-rendering onto a file Premiere
 // has imported goes stale in its media cache.
 import { spawn } from "node:child_process";
@@ -190,7 +192,14 @@ export async function renderJob({ kitDirPath, job, version, scale = 1, onProgres
   // footage frame a frame-aware agent composites under its stills to verify
   // positioning) reads this input prop and renders nothing, so a leftover debug
   // layer can never ship inside the placed clip. Agent stills don't pass it.
-  const args = [cli, "render", job.id, tmpPath, "--timeout=120000", "--muted", "--image-format=png", "--overwrite", '--props={"final":true}'];
+  // SILENT BY DEFAULT. Almost every style ships pictures only (narration is
+  // added in the editor), and a stray silent audio track on a clip is a nuisance
+  // on the timeline — so the render is muted and the finishing pass strips audio
+  // unless the job's STYLE declared that its scenes make their own sound
+  // (styles/<id>/style.json "audio": true -> job.audio, set at creation).
+  const withAudio = !!job.audio;
+  const args = [cli, "render", job.id, tmpPath, "--timeout=120000", "--image-format=png", "--overwrite", '--props={"final":true}'];
+  if (!withAudio) args.push("--muted");
   if (transparent) args.push("--codec=prores", "--prores-profile=4444", "--pixel-format=yuva444p10le");
   else args.push("--codec=h264", "--crf=14");
   if (Number.isFinite(scale) && scale > 0 && Math.abs(scale - 1) > 0.001) args.push(`--scale=${scale}`);
@@ -228,12 +237,16 @@ export async function renderJob({ kitDirPath, job, version, scale = 1, onProgres
   // Premiere-safe finishing pass.
   onProgress("Preparing the clip for Premiere…");
   rmSync(outPath, { force: true });
+  // AAC rather than "-c:a copy": Remotion hands back PCM in the ProRes .mov and
+  // AAC in the h264 .mp4, and one codec that Premiere imports either way is
+  // simpler than branching on which container we are finishing.
+  const audioArgs = withAudio ? ["-c:a", "aac", "-b:a", "192k"] : ["-an"];
   if (transparent) {
-    await runProcess(ffmpegBin(), ["-y", "-i", tmpPath, "-c", "copy", "-an", outPath], { token, timeoutMs: 300000, label: "ffmpeg remux" });
+    await runProcess(ffmpegBin(), ["-y", "-i", tmpPath, "-c:v", "copy", ...audioArgs, outPath], { token, timeoutMs: 300000, label: "ffmpeg remux" });
   } else {
     await runProcess(
       ffmpegBin(),
-      ["-y", "-i", tmpPath, "-c:v", "libx264", "-crf", "16", "-preset", "medium", "-g", "1", "-bf", "0", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", outPath],
+      ["-y", "-i", tmpPath, "-c:v", "libx264", "-crf", "16", "-preset", "medium", "-g", "1", "-bf", "0", "-pix_fmt", "yuv420p", "-movflags", "+faststart", ...audioArgs, outPath],
       { token, timeoutMs: 900000, label: "ffmpeg all-intra transcode" }
     );
   }

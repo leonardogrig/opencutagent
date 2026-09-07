@@ -16,8 +16,10 @@ styles/<id>/
                           the kit; import the engine via ../../../src/...)
 ```
 
-- `style.json` — `id` must equal the folder name; `name`/`description` feed the panel dropdown;
-  at most one style ships `"default": true`.
+- `style.json` - `id` must equal the folder name; `name`/`description` feed the panel dropdown;
+  at most one style ships `"default": true`. `"audio": true` declares that the style's scenes
+  make their own sound: renders are MUTED and stripped of audio unless a style asks for it (the
+  flag becomes `job.audio` at creation, and `server/animation/render.js` reads it).
 - `SKILL.md` — injected into the agent's system prompt on every chat turn, so keep it focused:
   the aesthetic, the non-negotiables, the components to use, look-and-feel defaults. End with a
   **Learnings log** section: the agent appends user-taught rules there, and the runtime workspace
@@ -68,6 +70,27 @@ same id wins over a workspace copy.
   word's onset; the server writes every job's `words.json` for it), idle life is seeded
   (`src/motion.ts`: blinks, breath, talking bob, glances). Components: `Leo`, `LeoCorner` (stream
   cam placement, the default), `PixelPanel`. Personal to the user; not a general-purpose style.
+- `n8n-game/` ("n8n 8-bit game") - the 16-bit n8n platformer from the `8bit-n8n-game` project,
+  ported: Thumbs (the n8n Builders thumbs-up, a live procedural mosaic rig) runs along the
+  editor's "Logs" panel and hops onto each node of a workflow, and a node he lands on RUNS and
+  takes the execution green. The palette, bitmap font (two faces), node-card painters, Logs
+  panel, parallax editor canvas, character rig and physics constants are the game's own code
+  carried over file for file; the only new art is the integration glyph. The whole style is one
+  component (`GameLevel`) that builds the level, plays it deterministically at the game's fixed
+  60Hz step and paints the result into a 384x216 canvas scaled up with nearest-neighbour. Card
+  positions are SOLVED from the jump arc rather than placed, so a gap is always exactly one
+  comfortable hop. The workflow is drawn already WIRED (each wire turning execution green as the
+  node feeding it runs), the clip OPENS zoomed in on the character and pulls back as he starts
+  running, and the standard build is a one-line swap of the last node: `image` on a node spec makes
+  it a picture card wearing a guest's photo or a brand's logo, nearest-neighbour pixelated but in
+  the SOURCE's own colours (a logo has to look like the brand). On a clip long enough to finish it,
+  the ending is the Mario one: he bumps the last card from below, a coin bursts out, taking it grows
+  him, and the camera pushes in on a small victory jig. THE ONE STYLE WITH SOUND: `style.json` declares `"audio": true`, which is what
+  tells the server to render its clips un-muted and keep an audio track; the jump and activate
+  chimes are resynthesised from the game's own Web Audio recipes into WAV data URIs (`src/sfx.ts`
+  - still no asset files). Note: the n8n name and brand palette belong to n8n, and the character
+  derives from n8n's own Builders artwork.
+
 - `n8n-ui/` ("n8n interface") — the REAL n8n app (v2.35.7 dark theme) recreated pixel-exact for
   tutorials, NOT hand-drawn: sidebar, Overview, workflow editor chrome, canvas nodes/edges with
   real integration logos and n8n's own node glyphs, node picker, node details view, executions,

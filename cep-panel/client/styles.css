@@ -784,7 +784,15 @@ button.reinsert:hover:not(:disabled) { background: var(--accent-hover); border-c
   font-size: var(--fs-md); line-height: 1.5;
   white-space: pre-wrap; word-break: break-word;
 }
+.anim-msg.user { flex-direction: row; align-items: center; gap: var(--sp-2); }
 .anim-msg.user .anim-bubble { background: var(--accent-bg); border: 1px solid var(--accent-border); border-bottom-right-radius: var(--r-sm); }
+/* Rewind the whole job to just before this message. Quiet until hovered: it is
+   a destructive control sitting next to every single thing you have said. */
+.anim-restart { opacity: 0; transition: opacity 120ms ease; flex: none; }
+.anim-msg.user:hover .anim-restart,
+.anim-restart:focus-visible,
+.anim-restart[data-confirm] { opacity: 1; }
+.anim-restart[data-confirm] { width: auto; padding: 0 var(--sp-2); font-size: var(--fs-xs, 11px); }
 .anim-msg.assistant .anim-bubble { background: var(--surface-2); border: 1px solid var(--border-subtle); border-bottom-left-radius: var(--r-sm); }
 .anim-msg.system { align-self: center; text-align: center; color: var(--text-tertiary); font-size: var(--fs-sm); max-width: 100%; }
 .anim-msg.system.err { color: var(--danger-text); }

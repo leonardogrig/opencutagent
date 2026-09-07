@@ -10,9 +10,9 @@ import {
   regenerateManifest, readRenderSignal, saveRefImage, saveJob, loadJobsFrom, readChat, appendChat,
   jobsRootFor, animTrackIndex, discardJob, jobTitle, clampTrackIndex,
   normalizeSizeOverride, fmtTokens, fmtElapsed, normalizeRawDuration, buildRawBrief, createRawJob, buildWordsJson,
-  sequenceFrameSize, setRawLength,
+  sequenceFrameSize, setRawLength, makeRestorePoint, restoreToPoint,
 } from "../animation/jobs.js";
-import { listStyles, readStyleSkill, readFramesSkill, kitDir as animWorkspaceDir, mergePreservedGuide, guideVersion, KIT_TEMPLATE_DIR } from "../animation/kit.js";
+import { listStyles, readStyleSkill, readFramesSkill, styleHasAudio, kitDir as animWorkspaceDir, mergePreservedGuide, guideVersion, KIT_TEMPLATE_DIR } from "../animation/kit.js";
 import {
   parseVideoSize, fitTransform, canvasMapFilter, frameName,
   mergeFrameSpans, prepareFrameAssets, removeFrameAssets, v1FrameSpans,
@@ -159,6 +159,52 @@ check("fmtTokens: zero/garbage is null", fmtTokens(0) === null && fmtTokens("x")
 check("fmtElapsed: seconds then minutes", fmtElapsed(45000) === "45s" && fmtElapsed(192000) === "3m 12s", [fmtElapsed(45000), fmtElapsed(192000)]);
 check("fmtElapsed: garbage is null", fmtElapsed("x") === null && fmtElapsed(-5) === null, null);
 
+/* ---------- restart from a message (the chat rewind) ---------- */
+{
+  const rtmp = mkdtempSync(join(tmpdir(), "oca-restart-"));
+  const rkit = join(rtmp, "kit");
+  const sceneDir = join(rkit, "src", "jobs", "anim-r");
+  mkdirSync(sceneDir, { recursive: true });
+  const rjob = { id: "anim-r", outDir: join(rtmp, "out"), sessionId: null };
+  mkdirSync(rjob.outDir, { recursive: true });
+  writeFileSync(join(sceneDir, "Scene.tsx"), "// v1");
+
+  // turn 1: no session yet, so the restore point is "start a fresh session"
+  const p1 = makeRestorePoint(rjob, rkit);
+  check("a restore point captures the PRE-turn session (null on the first turn) + a scene copy",
+    p1.sessionId === null && !!p1.scene && existsSync(join(rjob.outDir, "history", p1.scene)), p1);
+  appendChat(rjob, { role: "user", text: "first ask", restore: p1 });
+  appendChat(rjob, { role: "assistant", text: "ok" });
+  rjob.sessionId = "sess-1";
+  writeFileSync(join(sceneDir, "Scene.tsx"), "// v2");
+
+  // turn 2
+  const p2 = makeRestorePoint(rjob, rkit);
+  check("the next restore point captures the session the turn will resume", p2.sessionId === "sess-1", p2);
+  appendChat(rjob, { role: "user", text: "second ask", restore: p2 });
+  appendChat(rjob, { role: "assistant", text: "done" });
+  rjob.sessionId = "sess-2";
+  writeFileSync(join(sceneDir, "Scene.tsx"), "// v3");
+
+  const back = restoreToPoint(rjob, rkit, 2); // the second user message
+  check("restoring hands back the message so it can be edited and re-asked", back.text === "second ask", back);
+  check("restoring rewinds the SCENE to what it was before that turn",
+    readFileSync(join(sceneDir, "Scene.tsx"), "utf8") === "// v2", null);
+  check("restoring rewinds the agent session to the id that turn would have resumed",
+    rjob.sessionId === "sess-1", rjob.sessionId);
+  check("restoring truncates the chat to everything BEFORE that message",
+    JSON.stringify(readChat(rjob).map((m) => m.text)) === JSON.stringify(["first ask", "ok"]), readChat(rjob));
+
+  const back0 = restoreToPoint(rjob, rkit, 0); // all the way back to the first
+  check("restoring to the first message leaves NO session, so the next turn starts fresh",
+    back0.text === "first ask" && rjob.sessionId === null && readChat(rjob).length === 0, rjob.sessionId);
+
+  let rerr = null;
+  try { restoreToPoint(rjob, rkit, 0); } catch (e) { rerr = e.message; }
+  check("restoring to something that is not a restartable message is refused", /can't be restarted/.test(rerr || ""), rerr);
+  rmSync(rtmp, { recursive: true, force: true });
+}
+
 /* ---------- kit: styles registry + skill ---------- */
 const styles = listStyles();
 check("excalidraw style is registered", styles.some((s) => s.id === "excalidraw" && s.default), styles);
@@ -198,6 +244,79 @@ check("leo style is registered (not default, ships src)", styles.some((s) => s.i
     { text: "first", start: 0.1, end: 0.4 }, { text: "later", start: 4.2, end: 4.6 }, { text: "bad", start: 5.0 },
   ]), wj);
   check("buildWordsJson of nothing is an empty list", JSON.stringify(buildWordsJson()) === "[]" && JSON.stringify(buildWordsJson(new Map())) === "[]", null);
+}
+
+// A style is SILENT unless it says otherwise: the render pipeline mutes every
+// job whose style did not declare that its scenes make their own sound.
+check("styles are silent by default", styles.every((st) => st.id === "n8n-game" || st.audio === false) && styleHasAudio("excalidraw") === false, styles.map((st) => [st.id, st.audio]));
+check("styleHasAudio is false for a style that does not exist", styleHasAudio("nope") === false, null);
+
+// The 8-bit n8n platformer: a port of the game, and the one style with sound.
+if (existsSync(join(KIT_TEMPLATE_DIR, "styles", "n8n-game"))) { // private style package, absent in public checkouts
+  check("n8n-game style is registered (not default, ships src, declares audio)",
+    styles.some((st) => st.id === "n8n-game" && !st.default && !st.custom && st.audio === true) && styleHasAudio("n8n-game"), styles);
+  // The SHIPPED guide, not readStyleSkill: that prefers this machine's workspace
+  // copy, which a template edit only reaches on the next guide-version bump.
+  const skill = readFileSync(join(KIT_TEMPLATE_DIR, "styles", "n8n-game", "SKILL.md"), "utf8");
+  check("n8n-game skill teaches the one component + its workflow shapes + log",
+    /GameLevel/.test(skill) && /backdrop/.test(skill) && /shape/.test(skill) && /trigger/.test(skill) && /Learnings log/i.test(skill), null);
+  check("n8n-game skill forbids redrawing and hardcoded colour",
+    /Do not redraw/i.test(skill) && /Never hardcode a colour/i.test(skill) && /Never draw the n8n symbol/i.test(skill), null);
+  check("n8n-game skill has no em dashes", !/\u2014/.test(skill), null);
+  const gameSrc = join(KIT_TEMPLATE_DIR, "styles", "n8n-game", "src");
+  check("n8n-game package ships the ported engine + the level + the wires + the sfx",
+    ["config.ts", "brand.ts", "palette.ts", "font.ts", "thumb.ts", "nodes.ts", "wires.ts", "portrait.ts", "level.ts", "sfx.ts", "GameLevel.tsx", "index.ts"]
+      .every((f) => existsSync(join(gameSrc, f))), null);
+  check("n8n-game skill leads with the guest-image swap",
+    /THE STANDARD BUILD/.test(skill) && /new guest/i.test(skill) && /image: guest/.test(skill) && /imageTone/.test(skill), null);
+  check("n8n-game skill says the workflow is drawn already wired",
+    /already connected/i.test(skill) && /execution green/i.test(skill), null);
+  check("n8n-game skill says an image keeps its OWN colours (a logo must look like the brand)",
+    /COLOURS ARE THE SOURCE/.test(skill) && /imageTone` defaults to `"color"/.test(skill)
+    && /Never quantise a logo/.test(skill), null);
+  check("n8n-game skill documents the four-move camera and the 0.2 rule",
+    /### The camera/.test(skill) && /Opens tight/.test(skill) && /follow-cam/i.test(skill)
+    && /Pulls all the way out/.test(skill) && /multiple of 0\.2/.test(skill), null);
+  check("n8n-game skill documents the Mario finale and why the bump has no rise",
+    /### The finale/.test(skill) && /bumps it from below/i.test(skill) && /coin/i.test(skill)
+    && /grows/i.test(skill) && /The bump has no rise/.test(skill) && /Growing is a costume/.test(skill), null);
+  const lvl2 = readFileSync(join(gameSrc, "level.ts"), "utf8");
+  check("the finale is measured, not guessed (finaleFits) and the coin uses the game's easing",
+    /export function finaleFits/.test(lvl2) && /easeOutBack/.test(lvl2) && /CoinPhase/.test(lvl2), null);
+  check("he flows through the workflow: a short landing beat, no bouncing on a card",
+    /HE DOES NOT LOITER/.test(lvl2) && /const DWELL_BEAT = 0\.2;/.test(lvl2)
+    && !/hop = IDLE_HOP_VY/.test(lvl2), null);
+  check("spare clip time goes into the approach run, and it is capped",
+    /export function planRunup/.test(lvl2) && /MAX_RUNUP_SEC/.test(lvl2), null);
+  check("n8n-game skill says he flows and where spare time goes",
+    /does not loiter/i.test(skill) && /APPROACH and the PAYOFF SHOT/.test(skill)
+    && /ADD NODES/.test(skill), null);
+  check("the image card is exactly a plain square card (40 and 32 both read as too big)",
+    /export const PORTRAIT_CARD = CARD;/.test(lvl2), null);
+  check("n8n-game skill targets a 15s clip",
+    /15s is the length to aim for/.test(skill) && /A node costs about 1\.4s/.test(skill), null);
+  const gl = readFileSync(join(gameSrc, "GameLevel.tsx"), "utf8");
+  check("the component defaults to exact colours, a tracking camera and the auto finale",
+    /imageTone = "color"/.test(gl) && /zoom = 2\.2/.test(gl) && /zoomTrack = 1\.8/.test(gl)
+    && /finale = "auto"/.test(gl), null);
+  const cam = readFileSync(join(gameSrc, "level.ts"), "utf8");
+  check("the camera is geometric, tracks, and its window clamps + rounds inside the frame",
+    /export function zoomAt/.test(cam) && /track\?: number/.test(cam) && /wideAtSec/.test(cam)
+    && /export function viewRect/.test(cam) && /Math\.min\(WIDTH - w/.test(cam)
+    && /const x = Math\.round\(/.test(cam), null);
+  const lvl = readFileSync(join(gameSrc, "level.ts"), "utf8");
+  check("an image makes a card a portrait whatever shape says",
+    /export const shapeOf/.test(lvl) && /n\.image \? "portrait"/.test(lvl), null);
+  const cfg = readFileSync(join(gameSrc, "config.ts"), "utf8");
+  check("n8n-game keeps the game's own physics numbers",
+    /GRAVITY = 900/.test(cfg) && /MOVE_SPEED = 95/.test(cfg) && /JUMP_VELOCITY = -345/.test(cfg) && /WIDTH = 384/.test(cfg) && /HEIGHT = 216/.test(cfg), null);
+  const pal = readFileSync(join(gameSrc, "palette.ts"), "utf8");
+  check("n8n-game palette carries the accent pink and the execution green",
+    /#ff91ac/.test(pal) && /nodeActive: "#37d178"/.test(pal), null);
+  const sfx = readFileSync(join(gameSrc, "sfx.ts"), "utf8");
+  check("n8n-game resynthesises the game's own jump and activate recipes",
+    /freq: 320, freq2: 720, dur: 0\.16/.test(sfx) && /freq: 523, dur: 0\.07/.test(sfx) && /freq: 784, dur: 0\.16, vol: 0\.42, delay: 0\.07/.test(sfx), null);
+  check("scaffold points at the n8n-game package", sceneScaffold({ ...job, style: "n8n-game" }, { styleHasSrc: true }).includes('"../../../styles/n8n-game/src"'), null);
 }
 
 if (existsSync(join(KIT_TEMPLATE_DIR, "styles", "n8n-ui"))) { // private style package, absent in public checkouts
@@ -313,6 +432,13 @@ try {
     check("raw job length becomes fixed frames", rawJob.durationInFrames === 150, rawJob.durationInFrames);
     check("raw job is anchored at the playhead", approx(rawJob.range.startSec, 650.5) && approx(rawJob.range.endSec, 655.5), rawJob.range);
     check("raw job keeps the chosen track", rawJob.trackIndex === 2, rawJob.trackIndex);
+    // job.audio is what un-mutes the render, and it comes from the STYLE.
+    check("a silent style's job renders muted", rawJob.audio === false, rawJob.audio);
+    if (existsSync(join(KIT_TEMPLATE_DIR, "styles", "n8n-game"))) {
+      const loud = await createRawJob(ctx, { durationSec: 5, style: "n8n-game", projectDir: rawProject }, rawKit);
+      check("a style that makes sound sets job.audio, and it reaches the kit job.json",
+        loud.audio === true && JSON.parse(readFileSync(join(rawKit, "src", "jobs", loud.id, "job.json"), "utf8")).audio === true, loud.audio);
+    }
     check("raw job scaffolds a brief + scene the agent can open",
       existsSync(join(rawKit, "src", "jobs", rawJob.id, "brief.md")) &&
       readFileSync(join(rawKit, "src", "jobs", rawJob.id, "words.json"), "utf8") === "[]" &&
@@ -585,6 +711,13 @@ check("raw system prompt tells the agent there is no transcript", /STANDALONE/.t
   const merged = mergePreservedGuide(tmplGuide, wsGuide);
   check("frames: a newer guide replaces the body and carries the log entries over", merged && merged.includes("new body") && !merged.includes("old body") && merged.includes("- 2026-07-01 keep circles 12px padded"), merged);
   check("frames: an equal-or-older template leaves the workspace guide alone", mergePreservedGuide(tmplGuide, merged) === null && mergePreservedGuide("# no version", wsGuide) === null, null);
+  // The shipped styles spell it "## Learnings log"; a case-sensitive match used
+  // to drop every entry a user had taught a style on the next guide bump.
+  const lcWs = wsGuide.replace("## Learnings Log", "## Learnings log");
+  const lcTm = tmplGuide.replace("## Learnings Log", "## Learnings log");
+  const lcMerged = mergePreservedGuide(lcTm, lcWs);
+  check("a lowercase \"Learnings log\" is carried over too",
+    lcMerged && lcMerged.includes("- 2026-07-01 keep circles 12px padded"), lcMerged);
 
   // prepareFrameAssets is best-effort: no ctx + missing media still writes the map.
   const fkit = mkdtempSync(join(tmpdir(), "oca-frames-"));

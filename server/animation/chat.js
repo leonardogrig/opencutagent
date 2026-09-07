@@ -131,7 +131,13 @@ export function runChatTurn({ kitDirPath, job, prompt, styleSkill = "", framesSk
       // scheduling — a -p turn that "waits for a background agent" waits forever
       // (seen live: the agent spawned a survey sub-agent + a wakeup on turn one).
       "--tools", "Bash,Read,Write,Edit,Glob,Grep",
-      job.sessionId ? "--resume" : "--session-id", sessionId,
+      // FORK EVERY RESUMED TURN. The id we resume keeps whatever state it had,
+      // and the turn is written into a NEW one - so every id we have ever
+      // recorded stays a valid, unchanging rewind point (that is what makes
+      // "restart from here" possible; see animRestart). Verified against this
+      // CLI build: --fork-session works with -p --resume, returns the new id in
+      // the result, and reads the prompt cache, so a fork is nearly free.
+      ...(job.sessionId ? ["--resume", sessionId, "--fork-session"] : ["--session-id", sessionId]),
       "--append-system-prompt", buildSystemAppend(job, styleSkill, framesSkill),
     ];
     if (model && model !== "latest") args.push("--model", model);

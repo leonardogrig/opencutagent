@@ -14,7 +14,10 @@ canvas size, fps, exact duration and background mode are in the system prompt an
 2. **Duration, fps, width, height are fixed** by the selected timeline range. Design the animation
    to fill exactly that time (the narration for the range is in `brief.md` with word timings — sync
    your beats to it).
-3. **Silent, always.** Never add `<Audio>`/sound; the narration lives on the Premiere timeline.
+3. **Silent unless your STYLE says otherwise.** Never add `<Audio>`/sound yourself: the narration
+   lives on the Premiere timeline, and the server strips audio from every render whose style did not
+   declare it. The one exception is a style that ships its own sound (the 8-bit game's jump and
+   activate chimes), and there it is already inside the style's component: you still add none.
 4. **Frame-pure and seeded.** Every animated value = f(`useCurrentFrame()`). No `Math.random`,
    `Date.now`, `useState`-for-animation, CSS transitions. Every rough.js shape (sketch styles) needs a fixed
    `seed` (from `SEEDS`/`seedFor`) or it "boils" between frames.

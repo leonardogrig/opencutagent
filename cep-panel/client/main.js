@@ -2579,7 +2579,7 @@
        "animFrames", "animFramesWrap",
        "animSelect", "animStatus", "animJobs", "animSegs", "animRawBtn",
        "animSelSummary", "animCreateBtn", "animChatWrap", "animJobInfo", "animChatLog",
-       "animAttach", "animText", "animSendBtn", "animStopBtn", "animImgBtn", "animFile",
+       "animAttach", "animText", "animSendBtn", "animRedoBtn", "animStopBtn", "animImgBtn", "animFile",
        "animPending", "animPendingText", "animRenderBtn"]
         .forEach(function (id) { el[id] = $(id); });
     }
@@ -2927,9 +2927,19 @@
      * per turn, and system notices. Tool calls and intermediate narration are
      * abstracted into the single status line above the composer. */
     function scrollChat() { try { el.animChatLog.scrollTop = el.animChatLog.scrollHeight; } catch (e) {} }
-    function msgHtml(m) {
+    function msgHtml(m, index) {
       if (m.role === "user") {
-        return '<div class="anim-msg user"><div class="anim-bubble">' + esc(m.text) +
+        // A message with a restore point can be REWOUND to: the conversation,
+        // the agent's session and the scene file all go back to just before it
+        // and the text comes back in the composer to be edited. Everything
+        // after it is discarded, so it asks first.
+        var restart = m.restore && index != null && !state.busy
+          ? '<button class="icon-btn anim-restart" data-restart="' + index + '"' +
+            ' aria-label="Restart from this message"' +
+            ' data-tip="Rewinds the conversation, the agent\'s memory and the scene to just before this message, and puts it back in the box to edit. Everything after it is discarded.">' +
+            '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 2.64-6.36"/><path d="M3 3v6h6"/></svg></button>'
+          : "";
+        return '<div class="anim-msg user">' + restart + '<div class="anim-bubble">' + esc(m.text) +
           (m.images && m.images.length ? '<div class="anim-msg-imgs">📎 ' + esc(m.images.join(", ")) + "</div>" : "") +
           "</div></div>";
       }
@@ -2984,6 +2994,62 @@
         }
       );
     }
+    /* The last thing the USER said in this chat, so Redo can send it again.
+     * A stateful agent session cannot be rewound (there is no such thing in the
+     * CLI), so this is honestly a re-ask rather than an undo: the agent gets the
+     * same instruction with the current scene in front of it, which is what you
+     * want when the last attempt was close but wrong. */
+    function lastUserText() {
+      var job = activeJob();
+      var log = (job && job.chat) || [];
+      for (var i = log.length - 1; i >= 0; i--) {
+        if (log[i] && log[i].role === "user" && String(log[i].text || "").trim()) return log[i].text;
+      }
+      return "";
+    }
+    /* Rewind the whole job to just before a message: the chat, the agent's
+     * session (every turn forks one, so an old id really is that moment) and
+     * Scene.tsx. Two-step, because everything after it goes. */
+    function restartFrom(btn) {
+      var index = Number(btn.getAttribute("data-restart"));
+      if (!connected() || state.busy || !state.activeJobId) return;
+      if (btn.getAttribute("data-confirm") !== "1") {
+        btn.setAttribute("data-confirm", "1");
+        setLabel(btn, "Sure?");
+        btn.classList.add("danger");
+        setTimeout(function () {
+          if (!btn.isConnected) return;
+          btn.removeAttribute("data-confirm");
+          btn.classList.remove("danger");
+          renderChat();
+        }, 4000);
+        return;
+      }
+      state.busy = true; updateButtons();
+      callServer("animRestart", { jobId: state.activeJobId, index: index }).then(
+        function (res) {
+          state.busy = false;
+          refreshState();
+          if (res && res.text != null) el.animText.value = res.text;
+          el.animText.focus();
+          if (res && res.message) toast(res.message, "info");
+          updateButtons();
+        },
+        function (err) {
+          state.busy = false;
+          toast(err.message, "error");
+          refreshState();
+          updateButtons();
+        }
+      );
+    }
+    function redo() {
+      if (!connected() || state.busy || !state.activeJobId) return;
+      var text = lastUserText();
+      if (!text) return;
+      el.animText.value = text;
+      send();
+    }
     function renderChat() {
       var job = activeJob();
       if (!job) return;
@@ -3006,7 +3072,7 @@
           : "");
       var html = "", i;
       var chat = job.chat || [];
-      for (i = 0; i < chat.length; i++) html += msgHtml(chat[i]);
+      for (i = 0; i < chat.length; i++) html += msgHtml(chat[i], i);
       if (!chat.length || (chat.length === 1 && chat[0].role === "system")) {
         html += '<div class="anim-msg system"><span>' + (job.raw
           ? "Describe the animation you want. This one is not based on your transcript, so tell the agent everything it should show; attach reference images if it helps."
@@ -3387,6 +3453,10 @@
       el.animRawBtn.disabled = !conn || state.busy;          // never needs a selection
       el.animSendBtn.disabled = !conn || state.busy || !state.activeJobId;
       el.animSendBtn.style.display = state.busy && state.activeJobId ? "none" : "";
+      // Redo only exists once there is something to redo, and never mid-turn.
+      var canRedo = conn && !state.busy && !!state.activeJobId && !!lastUserText();
+      el.animRedoBtn.hidden = !canRedo;
+      el.animRedoBtn.disabled = !canRedo;
       el.animStopBtn.style.display = state.busy && state.activeJobId ? "" : "none";
       el.animImgBtn.disabled = state.busy;
       reflectPending();
@@ -3435,6 +3505,8 @@
       function seekClick(ev) {
         var f = ev.target.closest ? ev.target.closest('[data-act="folder"]') : null;
         if (f) { var job = activeJob(); if (job) openFolder(job.outDir); return; }
+        var r = ev.target.closest ? ev.target.closest("[data-restart]") : null;
+        if (r) { ev.stopPropagation(); restartFrom(r); return; }
         var t = ev.target.closest ? ev.target.closest("[data-seek]") : null;
         if (!t) return;
         var sec = parseFloat(t.getAttribute("data-seek"));
@@ -3479,6 +3551,7 @@
       el.animCreateBtn.addEventListener("click", function () { create(false); });
       el.animBackBtn.addEventListener("click", closeJob);
       el.animSendBtn.addEventListener("click", send);
+      el.animRedoBtn.addEventListener("click", redo);
       el.animRenderBtn.addEventListener("click", renderAgain);
       el.animStopBtn.addEventListener("click", stop);
       el.animText.addEventListener("keydown", function (e) {
@@ -3536,6 +3609,7 @@
       wire: wire, updateButtons: updateButtons, onShow: onShow, onHide: onHide,
       onEvent: onEvent, onSegments: onSegments, openJob: openJob, refreshState: refreshState,
       setJobs: function (jobs) { state.jobs = jobs || []; renderJobs(); if (state.activeJobId) renderChat(); },
+      lastUserText: lastUserText, // what Redo would re-send (browser QA)
     };
   })();
 

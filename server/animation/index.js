@@ -12,6 +12,7 @@ import { basename } from "node:path";
 import { ensureKit, kitDir, listStyles, readStyleSkill, readFramesSkill } from "./kit.js";
 import {
   createJob, createRawJob, discardJob, loadJobsFrom, readChat, appendChat, saveJob, snapshotScene,
+  makeRestorePoint, restoreToPoint,
   readRenderSignal, saveRefImage, animTrackIndex, fmtTokens, fmtElapsed, sequenceFrameSize,
   setRawLength,
 } from "./jobs.js";
@@ -208,6 +209,10 @@ async function renderAndPlace(ctx, job, kitPath, signal, token, stats = null) {
       : `Animation v${signal.version} rendered${stat}, but Premiere didn't confirm it landed. Check the timeline.`) +
     (scaleWarning ? " " + scaleWarning : "") +
     (placeInfo.warning ? " " + placeInfo.warning : "") +
+    // This style makes sound, and where Premiere puts the audio half of an A/V
+    // clip it overwrites onto a video track is version-dependent — so say the
+    // clip has sound rather than leaving the user to find out it is missing.
+    (job.audio ? " This clip has sound; check that the audio landed on an audio track." : "") +
     (stats && stats.extraNote ? " " + stats.extraNote : "");
   appendChat(job, { role: "system", kind: "placed", text, targetSeconds: placeInfo.targetSeconds, trackIndex: placeInfo.trackIndex });
   pushEvent(ctx, job.id, { kind: "placed", version: signal.version, file: renderInfo.file, ok: placeInfo.ok, targetSeconds: placeInfo.targetSeconds, text });
@@ -396,7 +401,10 @@ async function animChat(params, _helpers, ctx) {
     if (token.aborted) throw new Error("Cancelled");
 
     const refs = images.map((im) => saveRefImage(job, kitPath, im.name, im.data));
-    appendChat(job, { role: "user", text, images: refs.map((r) => basename(r)) });
+    // Recorded BEFORE the turn runs, so "restart from here" can put the session
+    // and the scene back exactly as they were when this message was sent.
+    const restore = makeRestorePoint(job, kitPath);
+    appendChat(job, { role: "user", text, images: refs.map((r) => basename(r)), restore });
     try {
       return await runTurn();
     } catch (e) {
@@ -532,6 +540,32 @@ async function animSetLength(params, _helpers, ctx) {
   return { job: jobSummary(job, ctx), message: text };
 }
 
+/**
+ * RESTART FROM A MESSAGE: put the conversation, the agent's session and the
+ * scene file back to just before the user said it, and hand the text back so it
+ * can be edited and asked again. This is a real rewind, not a re-ask - every
+ * resumed turn forks its session (chat.js), so the id recorded before a turn
+ * still holds exactly that state and resuming it un-says everything after.
+ *
+ * Everything after that message is DISCARDED (the chat, and the scene work the
+ * agent did in those turns). Rendered clips already on the timeline are left
+ * alone: taking media out from under Premiere is never ours to do.
+ */
+async function animRestart(params, _helpers, ctx) {
+  if (ctx.animOp) throw new Error("The animation agent is still working. Wait for it to finish or press Stop, then restart from a message.");
+  const job = getJob(ctx, params.jobId);
+  const kitPath = await ensureKit({});
+  const index = Number(params.index);
+  if (!Number.isInteger(index) || index < 0) throw new Error("Pick a message to restart from.");
+  const { text, images } = restoreToPoint(job, kitPath, index);
+  return {
+    job: jobSummary(job, ctx),
+    text,
+    images,
+    message: "Rewound to that message. Edit it and send when you are ready.",
+  };
+}
+
 /** Stop the in-flight chat turn / render (kills the child processes). */
 async function animCancel(_params, _helpers, ctx) {
   if (ctx.animOp) {
@@ -557,4 +591,4 @@ async function animDiscard(params, _helpers, ctx) {
   return { ok: true, message: `Deleted ${job.id} from the list.` + (params.deleteOutputs ? "" : " Any clip it placed stays on the timeline (its rendered file is kept).") };
 }
 
-export const animHandlers = { animStyles, animState, animCreate, animChat, animRender, animCancel, animDiscard, animSetLength };
+export const animHandlers = { animStyles, animState, animCreate, animChat, animRender, animCancel, animDiscard, animSetLength, animRestart };

@@ -11,7 +11,7 @@ import { join, basename } from "node:path";
 import { reconcile, requireReview } from "../review.js";
 import { readCachedWords } from "../transcription/transcribe.js";
 import { round3, mmss, fmtDur, fmtElapsed as fmtElapsedSec, getTimeline, callHostHealing } from "../tools/util.js";
-import { kitDir } from "./kit.js";
+import { kitDir, styleHasAudio } from "./kit.js";
 import { prepareFrameAssets, removeFrameAssets, v1FrameSpans } from "./frames.js";
 import { liveEnv } from "../config.js";
 import { log } from "../log.js";
@@ -416,6 +416,7 @@ function scaffoldKitJob(job, kitDirPath, briefText, words = []) {
   writeFileSync(join(jobDir, "job.json"), JSON.stringify({
     id: job.id, fps: job.fps, width: job.width, height: job.height,
     durationInFrames: job.durationInFrames, background: job.background, style: job.style,
+    audio: !!job.audio,
   }, null, 2));
   writeFileSync(join(jobDir, "Scene.tsx"), sceneScaffold(job, {
     styleHasSrc: existsSync(join(kitDirPath, "styles", job.style, "src", "index.ts")),
@@ -454,6 +455,10 @@ export async function createRawJob(ctx, { durationSec, style, background, trackI
     createdAt: Date.now(),
     raw: true,
     style: style || "excalidraw",
+    // Renders are muted unless the STYLE declares that its scenes make their
+    // own sound (kit.js listStyles). Nothing else in the pipeline can tell, and
+    // a silent audio track on every clip would be worse than no track at all.
+    audio: styleHasAudio(style || "excalidraw"),
     background: background === "transparent" ? "transparent" : "solid",
     trackIndex: clampTrackIndex(trackIndex),
     sizeSource,
@@ -509,6 +514,7 @@ export async function createJob(ctx, { indexes, style, background, trackIndex, p
     title: jobTitle(selText),
     createdAt: Date.now(),
     style: style || "excalidraw",
+    audio: styleHasAudio(style || "excalidraw"),
     // Frame-aware jobs only make sense as an overlay: the drawings must sit ON
     // the footage they anchor to, so the background is forced transparent.
     background: seeFrames || background === "transparent" ? "transparent" : "solid",
@@ -610,6 +616,7 @@ export function setRawLength(job, kitDirPath, durationSec) {
   writeFileSync(join(jobDir, "job.json"), JSON.stringify({
     id: job.id, fps: job.fps, width: job.width, height: job.height,
     durationInFrames: job.durationInFrames, background: job.background, style: job.style,
+    audio: !!job.audio,
   }, null, 2));
   writeFileSync(join(jobDir, "brief.md"), buildRawBrief(job));
   regenerateManifest(kitDirPath);
@@ -635,6 +642,61 @@ export function discardJob(job, kitDirPath, { deleteOutputs = false } = {}) {
 }
 
 /** Snapshot the agent's scene source into the output folder (posterity/survives kit resets). */
+/**
+ * A RESTORE POINT: everything needed to put the job back the way it was just
+ * before a user message, so that message can be edited and asked again from a
+ * clean slate. Recorded on the user's own chat entry, and made up of two halves
+ * that have to move together:
+ *   - the agent SESSION id as it was BEFORE the turn. Every resumed turn forks
+ *     (chat.js), so an old id keeps its state forever and resuming it really
+ *     does rewind the conversation;
+ *   - a copy of Scene.tsx as it was before the turn, because rewinding the talk
+ *     without rewinding the code would leave the agent describing a scene that
+ *     is not there any more.
+ * Best-effort: a job with no snapshot simply cannot be restarted from that
+ * point, which the panel reflects by not offering it.
+ * @returns {{sessionId: string|null, scene: string|null}}
+ */
+export function makeRestorePoint(job, kitDirPath) {
+  const point = { sessionId: job.sessionId || null, scene: null };
+  try {
+    const src = join(kitDirPath, "src", "jobs", job.id, "Scene.tsx");
+    if (!existsSync(src)) return point;
+    const dir = join(job.outDir, "history");
+    mkdirSync(dir, { recursive: true });
+    const name = `${Date.now()}-Scene.tsx`;
+    copyFileSync(src, join(dir, name));
+    point.scene = name;
+  } catch { /* best-effort: no snapshot means no restart offered */ }
+  return point;
+}
+
+/**
+ * Put the job back to a restore point: the scene file, the session id, and the
+ * chat truncated to everything BEFORE `index`. Returns the message text that
+ * was there, so the panel can drop it back in the composer to be edited.
+ * @returns {{text: string, images: string[]}}
+ */
+export function restoreToPoint(job, kitDirPath, index) {
+  const chat = readChat(job);
+  const entry = chat[index];
+  if (!entry || entry.role !== "user" || !entry.restore) {
+    throw new Error("That message can't be restarted from.");
+  }
+  const point = entry.restore;
+  if (point.scene) {
+    const snap = join(job.outDir, "history", point.scene);
+    const dest = join(kitDirPath, "src", "jobs", job.id, "Scene.tsx");
+    if (existsSync(snap)) copyFileSync(snap, dest);
+  }
+  // null is meaningful: this was the FIRST message, so the next turn starts a
+  // brand new session rather than resuming anything.
+  job.sessionId = point.sessionId || null;
+  writeFileSync(join(job.outDir, "chat.json"), JSON.stringify(chat.slice(0, index), null, 2));
+  saveJob(job);
+  return { text: String(entry.text || ""), images: Array.isArray(entry.images) ? entry.images : [] };
+}
+
 export function snapshotScene(job, kitDirPath) {
   try {
     const src = join(kitDirPath, "src", "jobs", job.id, "Scene.tsx");

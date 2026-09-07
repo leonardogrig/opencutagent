@@ -75,7 +75,10 @@ export function guideVersion(text) {
  */
 export function mergePreservedGuide(templateText, workspaceText) {
   if (guideVersion(templateText) <= guideVersion(workspaceText)) return null;
-  const logRe = /^## Learnings Log[\s\S]*$/m;
+  // Case-insensitive on purpose: the shipped styles write "## Learnings log"
+  // and this used to look only for "## Learnings Log", so an upgrade silently
+  // dropped every entry the user had taught a style.
+  const logRe = /^## Learnings log[\s\S]*$/mi;
   const oldLog = logRe.exec(workspaceText);
   if (!oldLog) return templateText;
   const newLog = logRe.exec(templateText);
@@ -183,7 +186,17 @@ export function listStyles() {
       try {
         const manifest = JSON.parse(readFileSync(join(stylesDir, e.name, "style.json"), "utf8"));
         if (manifest && manifest.id && !seen.has(manifest.id)) {
-          seen.set(manifest.id, { id: manifest.id, name: manifest.name || manifest.id, description: manifest.description || "", default: !!manifest.default, custom });
+          seen.set(manifest.id, {
+            id: manifest.id,
+            name: manifest.name || manifest.id,
+            description: manifest.description || "",
+            default: !!manifest.default,
+            // Styles are SILENT unless they say otherwise: the render pipeline
+            // mutes every job that doesn't ask for sound, so a style that makes
+            // its own (the 8-bit game's jump/activate chimes) has to declare it.
+            audio: !!manifest.audio,
+            custom,
+          });
         }
       } catch { /* not a valid style folder */ }
     }
@@ -191,6 +204,12 @@ export function listStyles() {
   const out = [...seen.values()];
   out.sort((a, b) => (b.default ? 1 : 0) - (a.default ? 1 : 0) || a.name.localeCompare(b.name));
   return out;
+}
+
+/** Does this style's scenes carry their own audio? See listStyles. */
+export function styleHasAudio(styleId) {
+  const found = listStyles().find((s) => s.id === styleId);
+  return !!(found && found.audio);
 }
 
 /**

@@ -10,10 +10,11 @@ Config.setVideoImageFormat("png");
 Config.setOverwriteOutput(true);
 Config.setStillImageFormat("png");
 
-// This project ships SILENT video (narration is added later in the editor).
-// No composition contains audio; muting the render is the backstop that
-// guarantees no audio track ever ends up in a deliverable.
-Config.setMuted(true);
+// NO GLOBAL MUTE. Nearly every style ships silent video (narration is added
+// later in the editor) and the server passes --muted explicitly for those, which
+// is the real backstop. It cannot live here because a CLI flag cannot UN-mute a
+// config that mutes: a style that makes its own sound (styles/n8n-game, whose
+// jump and activate chimes are the game's) would be silent forever.
 
 // Keyframe every 30 frames (1s). x264's default GOP is huge, and NLEs (Premiere)
 // fail to seek deep into a long GOP: "Error retrieving frame N … substituting" ~30s in.

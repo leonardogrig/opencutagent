@@ -200,8 +200,15 @@ primary buttons keep crisp dark labels (white-on-Ember is only ~3.1:1).
   silently: a toast dies with the next reload. Composer `.anim-inputbox`:
   attach pills (`.anim-pill` + ×; hovering a pill pops an `.imgpeek` image
   preview above it — tipbox conventions, max 220px), textarea (Enter sends,
-  Shift+Enter newline),
-  single-primary Send that swaps to a danger Stop while the agent works. Top
+  Shift+Enter newline), a ghost **Redo** icon-button that re-sends the last user
+  message (hidden until there is one, and never mid-turn — it is a re-ask), and
+  the single-primary Send that swaps to a danger Stop while the agent works.
+  Every user bubble also carries a hover-only `.anim-restart` rewind button
+  (two-step "Sure?", because everything after it is discarded) that **restarts
+  from that message**: the chat, the agent's session and `Scene.tsx` all go back
+  to just before it and the text returns to the composer to be edited. That is a
+  real rewind rather than a re-ask, because every resumed turn forks its session
+  (`--fork-session`), so the id recorded before a turn keeps that state forever. Top
   `.anim-bar` (flex-wrap): Style select, a `.segctl-sm` Solid bg / No bg
   control, Track select, and the **output Size group** — `#animSize` select
   (Sequence / 4K / 1440p / 1080p / 720p / Custom), a Horizontal/Vertical
