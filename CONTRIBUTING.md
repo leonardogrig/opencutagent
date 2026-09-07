@@ -26,7 +26,8 @@ opencutagent/
 │   └── host/premiere.jsx    ALL ExtendScript; the only file that touches Premiere APIs
 ├── .claude/skills/          skills that teach Claude the editing workflows
 ├── docs/ARCHITECTURE.md     how the pieces talk + why the big design decisions
-└── CLAUDE.md                working notes + hard-won lessons (read before touching MCP flows)
+├── CLAUDE.md                distilled working rules (read before touching MCP flows)
+└── docs/LESSONS.md          full dated history of every failure and fix
 ```
 
 ## Setup
@@ -83,7 +84,7 @@ From the repo root, `npm test` / `npm run check` forward to the same scripts.
 
 ## Recording lessons
 
-When you hit a new failure mode and find the fix, append a terse "symptom, cause, fix" entry to the **Lessons learned** section of `CLAUDE.md`. Future contributors (and Claude sessions) read it first; a lesson written once is never re-learned the hard way.
+When you hit a new failure mode and find the fix, add a one-line rule to the matching section of `CLAUDE.md` and the full "symptom, cause, fix" story to `docs/LESSONS.md`. Future contributors (and Claude sessions) read it first; a lesson written once is never re-learned the hard way.
 
 ## Pull requests
 

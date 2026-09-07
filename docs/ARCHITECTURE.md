@@ -65,4 +65,4 @@ Rungs 1-2 produce a **new** sequence (undo = delete it); rung 3 edits in place u
 - **The panel never decides; the server never draws.** State flows server to panel; user intent flows panel to server as RPCs.
 - **Trust nothing stale.** Clip ids renumber, stored frames drift, "applied N/N" counts calls. Reconcile from source ranges and verify by re-reading the timeline.
 - **Version-sensitive host APIs get try-ladders** and a Phase-0 probe (`ppro_run_script`) before first live use.
-- **Lessons are recorded** in `CLAUDE.md` ("Lessons learned"): every dead end found the hard way is written down so no one re-discovers it.
+- **Lessons are recorded** in `docs/LESSONS.md` (full dated history) with the distilled rules in `CLAUDE.md`: every dead end found the hard way is written down so no one re-discovers it.
