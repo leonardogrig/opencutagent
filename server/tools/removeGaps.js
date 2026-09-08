@@ -43,7 +43,13 @@ export default {
       return g.durationSeconds >= minGapSec;
     });
 
-    if (candidates.length === 0) {
+    // Clips that drifted off the frame grid (1-2 ticks, from any edit that set a
+    // position in seconds) read as sub-frame gaps Premiere's own Close Gap
+    // cannot close; the host snaps them back before closing, so they count.
+    const tb = BigInt(before.sequence.timebase);
+    const offGrid = before.clips.filter((c) => BigInt(c.start.ticks) % tb !== 0n || BigInt(c.end.ticks) % tb !== 0n).length;
+
+    if (candidates.length === 0 && offGrid === 0) {
       return { revision: ctx.state.revision, closed: 0, message: "No gaps matched (nothing to close)." };
     }
 
@@ -53,6 +59,7 @@ export default {
     return {
       revision,
       closed: result && result.count != null ? result.count : candidates.length,
+      snappedToFrameGrid: offGrid,
       gaps: (result && result.closed) || candidates.map((g) => ({ track: g.track, at: g.start.tc, durationSeconds: g.durationSeconds })),
     };
   },

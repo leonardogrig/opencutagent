@@ -332,8 +332,28 @@ export async function applyRangesBatched(ctx, frames, { ripple = true, fps = 30,
       errors.push({ at: -1, error: `close gaps: ${e.message}` });
     }
   }
+  // A per-track QE razor leaves every piece after the first UNLINKED, and any
+  // drift off the frame grid shows up as 1-2 tick gaps Premiere cannot close.
+  // One host pass fixes both (snap + relink V/A pieces cut from the same span).
+  let tidy = null;
+  if (applied > 0) {
+    onProgress("Relinking video and audio…");
+    try {
+      tidy = await callHostHealing(ctx, "tidyTimeline", { snap: true, relink: true }, { timeoutMs: 600000 });
+    } catch (e) {
+      errors.push({ at: -1, error: `relink: ${e.message}` });
+    }
+  }
   if (errors.length) log(`applyRangesBatched: ${errors.length} error(s), first:`, errors[0].error);
-  return { applied, appliedSec: round3(appliedSec), requested: merged.length, aborted, errors };
+  return {
+    applied,
+    appliedSec: round3(appliedSec),
+    requested: merged.length,
+    aborted,
+    errors,
+    relinked: tidy && tidy.relinked ? tidy.relinked.linked : 0,
+    snapped: tidy && tidy.snapped ? tidy.snapped : null,
+  };
 }
 
 /**

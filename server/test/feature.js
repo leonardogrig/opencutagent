@@ -75,7 +75,7 @@ check("summarize matches", summarize(ctx.review).keep === 2);
 const res = await applyReview(ctx, { removeGaps: true });
 check("applies 2 cuts (protected skipped)", res.applied === 2, res);
 check("one batch call, ranges ascending", ctx.calls[0].ranges && ctx.calls[0].ranges[0].startFrame === 20 && ctx.calls[0].ranges[1].startFrame === 60, ctx.calls);
-check("removeGaps → one closeRangeGaps pass", ctx.calls.length === 2 && ctx.calls[1].ranges.length === 2, ctx.calls);
+check("removeGaps → one closeRangeGaps pass, then snap+relink", ctx.calls.length === 3 && ctx.calls[1].ranges.length === 2 && ctx.calls[2].relink === true, ctx.calls);
 check("protected frame 40 not cut", !ctx.calls[0].ranges.some((r) => r.startFrame === 40), ctx.calls[0].ranges);
 
 // --- applyReview + applyDecisions with trimPauses: cuts AND pause spans apply together ---
@@ -155,7 +155,7 @@ const panelSegs = [
 ];
 const res2 = await dispatch("applyDecisions", { segments: panelSegs, removeGaps: false }, { progress: () => {} });
 check("panel applyDecisions cuts 2", res2.applied === 2, res2);
-check("panel lift (no removeGaps) skips the close pass", ctx2.calls.length === 1 && ctx2.calls[0].ranges.length === 2, ctx2.calls);
+check("panel lift (no removeGaps) skips the close pass but still relinks", ctx2.calls.length === 2 && ctx2.calls[0].ranges.length === 2 && ctx2.calls[1].snap === true, ctx2.calls);
 
 // --- unknown RPC method ---
 let threw = false;

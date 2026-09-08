@@ -260,6 +260,55 @@ function normalizeFileDefs(root, defs) {
   });
 }
 
+function setOrAddText(el, tag, value) {
+  if (setText(el, tag, value)) return;
+  el.children.push({ type: "el", tag, attrs: "", children: [{ type: "raw", text: String(value) }], selfClosing: false });
+}
+
+// Premiere resolves a <link> by (mediatype, trackindex, clipindex), NOT by
+// linkclipref alone: after a split, piece 2+ of a clip carries its original
+// <clipindex> (stale — pieces were inserted before it) and imports UNLINKED
+// (live-verified: a 268-clip tightened sequence came back with one linked
+// pair). Renumber every link from the final per-track order, and drop links
+// whose partner no longer exists (deleted, or zero-length after the cuts).
+export function relinkClipitems(media) {
+  const where = new Map(); // clipitem id -> { mediatype, trackindex, clipindex }
+  for (const mt of ["video", "audio"]) {
+    const group = childEl(media, mt);
+    if (!group) continue;
+    let trackindex = 0;
+    for (const track of group.children) {
+      if (!isEl(track, "track")) continue;
+      trackindex++;
+      let clipindex = 0;
+      for (const node of track.children) {
+        if (!isEl(node, "clipitem")) continue;
+        clipindex++;
+        const id = getAttr(node, "id");
+        if (id) where.set(id, { mediatype: mt, trackindex, clipindex });
+      }
+    }
+  }
+  walkEls(media, (item) => {
+    if (item.tag !== "clipitem") return;
+    const links = item.children.filter((c) => isEl(c, "link"));
+    if (!links.length) return;
+    const kept = [];
+    for (const link of links) {
+      const ref = childEl(link, "linkclipref");
+      const pos = ref ? where.get(textOf(ref).trim()) : null;
+      if (!pos) continue;
+      setOrAddText(link, "mediatype", pos.mediatype);
+      setOrAddText(link, "trackindex", pos.trackindex);
+      setOrAddText(link, "clipindex", pos.clipindex);
+      kept.push(link);
+    }
+    // a link group needs a partner; a lone self-reference is noise
+    const survivors = kept.length >= 2 ? new Set(kept) : new Set();
+    item.children = item.children.filter((c) => !isEl(c, "link") || survivors.has(c));
+  });
+}
+
 /**
  * Remove the merged, ascending cut ranges (frames, sequence timebase) from an
  * exported xmeml document and compact everything left — the round-trip core.
@@ -318,6 +367,7 @@ export function transformXmeml(xmlString, cuts, { sequenceName } = {}) {
       track.children = next;
     }
   }
+  relinkClipitems(media);
 
   // sequence markers: drop the ones inside a cut, shift the rest
   seq.children = seq.children.filter((c) => {

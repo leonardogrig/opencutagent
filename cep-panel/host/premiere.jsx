@@ -110,10 +110,24 @@ $.editagent = (function () {
 
   /* ---------- DOM helpers ---------- */
 
-  function makeTime(sec) {
+  // Premiere TRUNCATES Time.seconds to ticks (36.2333... lands 1 tick short of
+  // frame 1087), so every position set through .seconds drifts off the frame
+  // grid and the timeline ends up with 1-2 tick gaps Close Gap cannot close.
+  // Always build Time values from an integer tick count.
+  function ticksTime(ticks) {
     var t = new Time();
-    t.seconds = sec;
+    t.ticks = String(ticks);
     return t;
+  }
+  function makeTime(sec) {
+    return ticksTime(Math.round(sec * TPS));
+  }
+  // Nearest whole frame of the sequence timebase (ticks in, ticks out).
+  function gridTicks(ticks, tb) {
+    return Math.round(Number(ticks) / tb) * tb;
+  }
+  function gridTime(sec, tb) {
+    return ticksTime(gridTicks(Math.round(sec * TPS), tb));
   }
 
   function requireSeq() {
@@ -223,10 +237,11 @@ $.editagent = (function () {
     var clip = track.clips[p.itemIndex];
     if (!clip) throw new Error("Clip not found at " + p.trackType + " track " + p.trackIndex + " item " + p.itemIndex + ".");
     // Source in/out is the most reliable trim path; set those first.
+    var tb = Number(requireSeq().timebase);
     if (p.sourceInSec != null) clip.inPoint = makeTime(p.sourceInSec);
     if (p.sourceOutSec != null) clip.outPoint = makeTime(p.sourceOutSec);
-    if (p.timelineStartSec != null) clip.start = makeTime(p.timelineStartSec);
-    if (p.timelineEndSec != null) clip.end = makeTime(p.timelineEndSec);
+    if (p.timelineStartSec != null) clip.start = gridTime(p.timelineStartSec, tb);
+    if (p.timelineEndSec != null) clip.end = gridTime(p.timelineEndSec, tb);
     return {
       ok: true,
       start: clip.start.seconds,
@@ -236,55 +251,175 @@ $.editagent = (function () {
     };
   }
 
-  function closeGapsOnTrack(track, type, trackIndex, minGap, details) {
+  function closeGapsOnTrack(track, type, trackIndex, minGapTicks, tb, details) {
     var items = [];
     var n = track.clips.numItems;
     for (var j = 0; j < n; j++) {
       var c = track.clips[j];
-      items.push({ clip: c, start: c.start.seconds, end: c.end.seconds });
+      items.push({ clip: c, s: Number(c.start.ticks), e: Number(c.end.ticks) });
     }
     items.sort(function (a, b) {
-      return a.start - b.start;
+      return a.s - b.s;
     });
-    var cursor = 0;
+    var cursor = 0; // ticks, always on the frame grid
     var closed = 0;
     for (var k = 0; k < items.length; k++) {
       var it = items[k];
-      var gap = it.start - cursor;
-      if (gap >= minGap && gap > 0) {
-        it.clip.move(makeTime(-gap)); // negative offset moves the clip earlier
-        details.push({ track: (type === "video" ? "V" : "A") + (trackIndex + 1), seconds: gap });
+      var gap = it.s - cursor;
+      if (gap > 0 && gap >= minGapTicks) {
+        var delta = gridTicks(cursor, tb) - it.s; // lands ON the grid, whatever the clip's drift was
+        it.clip.move(ticksTime(delta));
+        details.push({ track: (type === "video" ? "V" : "A") + (trackIndex + 1), seconds: gap / TPS });
         closed++;
-        cursor = it.end - gap;
-      } else {
-        cursor = it.end;
+        cursor = it.e + delta;
+      } else if (it.e > cursor) {
+        cursor = it.e;
       }
     }
     return closed;
   }
 
+  // Snap every clip on a track to the frame grid: start via a tick-exact move,
+  // end via the end setter (plus the matching source out, which Premiere leaves
+  // alone). Ascending order keeps contiguous neighbours contiguous: both sides
+  // of a shared edge round to the same frame. Pieces shorter than half a frame
+  // (the 1-tick slivers an off-grid razor leaves) are deleted.
+  function snapTrackToGrid(track, tb, stats) {
+    var items = [];
+    var j;
+    for (j = 0; j < track.clips.numItems; j++) {
+      var c = track.clips[j];
+      items.push({ clip: c, s: Number(c.start.ticks) });
+    }
+    items.sort(function (a, b) { return a.s - b.s; });
+    for (j = 0; j < items.length; j++) {
+      var clip = items[j].clip;
+      var s = Number(clip.start.ticks);
+      var targetS = gridTicks(s, tb);
+      if (targetS !== s) {
+        try { clip.move(ticksTime(targetS - s)); stats.moved++; s = Number(clip.start.ticks); } catch (e) { stats.errors++; continue; }
+      }
+      var e2 = Number(clip.end.ticks);
+      var targetE = gridTicks(e2, tb);
+      if (targetE <= s) {
+        try { clip.remove(false, false); stats.removed++; } catch (e3) { stats.errors++; }
+        continue;
+      }
+      if (targetE !== e2) {
+        try { clip.end = ticksTime(targetE); stats.trimmed++; } catch (e4) { stats.errors++; }
+      }
+      // keep the source span the same length as the timeline span (1:1 speed only:
+      // never touch a clip whose source/timeline lengths differ by a frame or more)
+      try {
+        var inT = Number(clip.inPoint.ticks);
+        var outT = Number(clip.outPoint.ticks);
+        var wantOut = inT + (targetE - s);
+        if (wantOut !== outT && Math.abs(wantOut - outT) < tb) clip.outPoint = ticksTime(wantOut);
+      } catch (e5) {}
+    }
+  }
+
+  function snapClipsToGrid(seq) {
+    var tb = Number(seq.timebase);
+    var stats = { moved: 0, trimmed: 0, removed: 0, errors: 0 };
+    var i;
+    for (i = 0; i < seq.videoTracks.numTracks; i++) snapTrackToGrid(seq.videoTracks[i], tb, stats);
+    for (i = 0; i < seq.audioTracks.numTracks; i++) snapTrackToGrid(seq.audioTracks[i], tb, stats);
+    return stats;
+  }
+
+  // Re-link video pieces to the audio pieces cut from the same source span
+  // (same project item, same timeline start/end, same source in). A per-track
+  // QE razor leaves every piece after the first UNLINKED, so this runs after
+  // every batch cut. Uses the selection + Sequence.linkSelection() (one video
+  // clip + its audio mates per call, the only shape Premiere's Link accepts).
+  function relinkClips(seq) {
+    var tb = Number(seq.timebase);
+    var i, j;
+    function linkedCount(c) {
+      try { var li = c.getLinkedItems(); return li && li.numItems ? li.numItems : 0; } catch (e) { return 0; }
+    }
+    function nodeOf(c) {
+      try { return c.projectItem ? String(c.projectItem.nodeId) : ""; } catch (e) { return ""; }
+    }
+    // one pass over the audio: unlinked pieces indexed by start ticks
+    var audioByStart = {};
+    for (i = 0; i < seq.audioTracks.numTracks; i++) {
+      var at = seq.audioTracks[i];
+      for (j = 0; j < at.clips.numItems; j++) {
+        var a = at.clips[j];
+        if (linkedCount(a) > 1) continue;
+        var key = String(a.start.ticks);
+        if (!audioByStart[key]) audioByStart[key] = [];
+        audioByStart[key].push({ clip: a, end: String(a.end.ticks), inT: Number(a.inPoint.ticks), node: nodeOf(a), used: false });
+      }
+    }
+    var linked = 0, attempted = 0, k;
+    for (i = 0; i < seq.videoTracks.numTracks; i++) {
+      var vt = seq.videoTracks[i];
+      for (j = 0; j < vt.clips.numItems; j++) {
+        var v = vt.clips[j];
+        if (linkedCount(v) > 1) continue;
+        var cands = audioByStart[String(v.start.ticks)];
+        if (!cands) continue;
+        var vEnd = String(v.end.ticks), vIn = Number(v.inPoint.ticks), vNode = nodeOf(v);
+        var mates = [];
+        for (k = 0; k < cands.length; k++) {
+          var m = cands[k];
+          if (m.used || m.end !== vEnd || m.node !== vNode || Math.abs(m.inT - vIn) >= tb) continue;
+          mates.push(m);
+        }
+        if (!mates.length) continue;
+        attempted++;
+        try {
+          v.setSelected(true, 0);
+          for (k = 0; k < mates.length; k++) mates[k].clip.setSelected(true, 0);
+          var ok = seq.linkSelection();
+          v.setSelected(false, 0);
+          for (k = 0; k < mates.length; k++) mates[k].clip.setSelected(false, 0);
+          if (ok) { linked++; for (k = 0; k < mates.length; k++) mates[k].used = true; }
+        } catch (e2) {}
+      }
+    }
+    return { linked: linked, attempted: attempted };
+  }
+
+  // Post-batch clean-up shared by every cut path: snap to the frame grid (no
+  // sub-frame gaps, no slivers) and re-link V/A pieces. Idempotent.
+  function tidyTimeline(p) {
+    var seq = requireSeq();
+    var out = { ok: true };
+    if (!p || p.snap !== false) out.snapped = snapClipsToGrid(seq);
+    if (!p || p.relink !== false) out.relinked = relinkClips(seq);
+    return out;
+  }
+
   function removeGaps(p) {
     var seq = requireSeq();
-    var minGap = p.minGapSec != null ? p.minGapSec : 0.0005;
+    var tb = Number(seq.timebase);
+    var minGapTicks = p.minGapSec != null ? Math.round(p.minGapSec * TPS) : 1;
     var details = [];
     var closed = 0;
     var doType = p.trackType != null ? p.trackType : null;
     var onlyIndex = p.trackIndex != null ? p.trackIndex : null;
+    // Off-grid clips are the usual reason a gap "cannot be closed": snap first
+    // so every remaining gap is a whole number of frames.
+    var snapped = snapClipsToGrid(seq);
     if (doType === null || doType === "video") {
       var vt = seq.videoTracks;
       for (var i = 0; i < vt.numTracks; i++) {
         if (onlyIndex !== null && onlyIndex !== i) continue;
-        closed += closeGapsOnTrack(vt[i], "video", i, minGap, details);
+        closed += closeGapsOnTrack(vt[i], "video", i, minGapTicks, tb, details);
       }
     }
     if (doType === null || doType === "audio") {
       var at = seq.audioTracks;
       for (var a = 0; a < at.numTracks; a++) {
         if (onlyIndex !== null && onlyIndex !== a) continue;
-        closed += closeGapsOnTrack(at[a], "audio", a, minGap, details);
+        closed += closeGapsOnTrack(at[a], "audio", a, minGapTicks, tb, details);
       }
     }
-    return { count: closed, closed: details };
+    return { count: closed, closed: details, snapped: snapped };
   }
 
   function removeMiddle(tracks, startFrame, fps, ripple) {
@@ -426,9 +561,9 @@ $.editagent = (function () {
   // old per-track ripple semantics). Pre-existing gaps are untouched.
   function closeRangeGaps(p) {
     var seq = requireSeq();
-    var fps = TPS / Number(seq.timebase);
+    var tb = Number(seq.timebase);
     var ranges = p.ranges || []; // ascending, non-overlapping
-    var slack = 1.5 / fps;
+    var slack = 1.5 * tb; // ticks
     var moved = 0;
 
     function closeTrack(track) {
@@ -436,27 +571,31 @@ $.editagent = (function () {
       var j;
       for (j = 0; j < track.clips.numItems; j++) {
         var c = track.clips[j];
-        items.push({ clip: c, s: c.start.seconds });
+        items.push({ clip: c, s: Number(c.start.ticks), e: Number(c.end.ticks) });
       }
       items.sort(function (a, b) { return a.s - b.s; });
 
-      // seconds each range contributes on THIS track (0 while still occupied)
+      // ticks each range contributes on THIS track (0 while still occupied)
       var durs = [];
       var k = 0;
       for (var r = 0; r < ranges.length; r++) {
-        var rs = ranges[r].startFrame / fps;
-        var re = ranges[r].endFrame / fps;
-        while (k < items.length && items[k].clip.end.seconds <= rs + slack) k++;
+        var rs = ranges[r].startFrame * tb;
+        var re = ranges[r].endFrame * tb;
+        while (k < items.length && items[k].e <= rs + slack) k++;
         durs.push(k < items.length && items[k].s < re - slack ? 0 : re - rs);
       }
 
       // shift each clip left once by the emptied duration before it; ascending
-      // is safe (earlier clips shift by no more and have already moved).
+      // is safe (earlier clips shift by no more and have already moved). The
+      // target is computed on the frame grid, so a drifted clip lands ON it.
       var cum = 0, ri = 0;
       for (j = 0; j < items.length; j++) {
-        while (ri < ranges.length && ranges[ri].endFrame / fps <= items[j].s + slack) { cum += durs[ri]; ri++; }
-        if (cum > 0.0001) {
-          try { items[j].clip.move(makeTime(-cum)); moved++; } catch (e) {}
+        while (ri < ranges.length && ranges[ri].endFrame * tb <= items[j].s + slack) { cum += durs[ri]; ri++; }
+        if (cum > 0) {
+          var delta = gridTicks(items[j].s - cum, tb) - items[j].s;
+          if (delta !== 0) {
+            try { items[j].clip.move(ticksTime(delta)); moved++; } catch (e) {}
+          }
         }
       }
     }
@@ -648,6 +787,7 @@ $.editagent = (function () {
 
     // PHASE 2 — execute (right-to-left so a survivor never overlaps one to its right)
     var resized = 0, removed = 0, restoredTracks = 0;
+    var tbRestore = Number(seq.timebase);
     for (i = 0; i < plans.length; i++) {
       var planOps = plans[i].ops;
       if (!planOps.length) continue;
@@ -660,8 +800,8 @@ $.editagent = (function () {
         var clip2 = op.survivor.clip;
         clip2.inPoint = makeTime(op.o.inSec);
         clip2.outPoint = makeTime(op.o.outSec);
-        clip2.start = makeTime(op.o.startSec);
-        clip2.end = makeTime(op.o.endSec);
+        clip2.start = gridTime(op.o.startSec, tbRestore);
+        clip2.end = gridTime(op.o.endSec, tbRestore);
         resized++;
       }
     }
@@ -1132,6 +1272,7 @@ $.editagent = (function () {
     removeRange: removeRange,
     removeRangesBatch: removeRangesBatch,
     closeRangeGaps: closeRangeGaps,
+    tidyTimeline: tidyTimeline,
     muteRange: muteRange,
     setPlayhead: setPlayhead,
     getPlayhead: getPlayhead,

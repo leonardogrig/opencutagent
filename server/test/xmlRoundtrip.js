@@ -94,6 +94,17 @@ check("clone ids suffixed", /<clipitem id="clipitem-1-p2">/.test(xml) && /<clipi
 const vP2 = xml.match(/<clipitem id="clipitem-1-p2">[\s\S]*?<\/clipitem>/)[0];
 check("clone links re-suffixed to partner clone", /<linkclipref>clipitem-2-p2<\/linkclipref>/.test(vP2) && /<linkclipref>clipitem-1-p2<\/linkclipref>/.test(vP2), vP2.match(/<linkclipref>[^<]*/g));
 
+// Premiere resolves links by (mediatype, trackindex, clipindex): every piece
+// must carry its FINAL position in the track, or it imports unlinked.
+const linkPos = (piece) => (piece.match(/<link>[\s\S]*?<\/link>/g) || []).map((l) => (l.match(/<linkclipref>([^<]*)<\/linkclipref>[\s\S]*?<trackindex>(\d+)<\/trackindex><clipindex>(\d+)<\/clipindex>/) || []).slice(1).join(":"));
+check("piece 2 links carry clipindex 2 on both tracks", JSON.stringify(linkPos(vP2)) === JSON.stringify(["clipitem-1-p2:1:2", "clipitem-2-p2:1:2"]), linkPos(vP2));
+const aP3 = xml.match(/<clipitem id="clipitem-2-p3">[\s\S]*?<\/clipitem>/)[0];
+check("piece 3 links carry clipindex 3", JSON.stringify(linkPos(aP3)) === JSON.stringify(["clipitem-1-p3:1:3", "clipitem-2-p3:1:3"]), linkPos(aP3));
+// a cut that deletes the whole audio partner leaves the video piece with no links at all
+const LONE = FIXTURE.replace(/<audio>[\s\S]*<\/audio>/, "<audio><track></track></audio>");
+const lone = transformXmeml(LONE, CUTS, {}).xml;
+check("links to a missing partner are dropped", !/<link>/.test(lone) && (lone.match(/<clipitem /g) || []).length === 3, lone.match(/<link>[\s\S]*?<\/link>/g));
+
 // effects survive on every piece — the whole point of the round-trip
 check("Motion filter on all 3 video pieces", (xml.match(/<parameterid>scale<\/parameterid><value>133<\/value>/g) || []).length === 3, null);
 check("audio level filter on all 3 audio pieces", (xml.match(/<parameterid>level<\/parameterid><value>0\.7<\/value>/g) || []).length === 3, null);

@@ -66,12 +66,14 @@ check("remove applies 2", r1.applied === 2, r1);
 check("remove batches into one removeRangesBatch", ctx1.calls.filter((c) => c.action === "removeRangesBatch").length === 1, ctx1.calls);
 check("batch ranges ascending", ctx1.calls[0].ranges[0].startFrame === 300 && ctx1.calls[0].ranges[1].startFrame === 450, ctx1.calls[0].ranges);
 check("remove closes gaps once", ctx1.calls.filter((c) => c.action === "closeRangeGaps").length === 1 && ctx1.calls[1].action === "closeRangeGaps" && ctx1.calls[1].ranges.length === 2, ctx1.calls);
+check("remove ends with one snap+relink pass", ctx1.calls.filter((c) => c.action === "tidyTimeline").length === 1 && ctx1.calls[ctx1.calls.length - 1].action === "tidyTimeline" && ctx1.calls[ctx1.calls.length - 1].relink === true, ctx1.calls);
 check("remove reports ~2s removed", Math.abs(r1.removedSeconds - 2) < 1e-6, r1);
 
 // --- keepSpaces (lift): batch only, NO close pass ---
 const ctx2 = makeCtx();
 await applySilenceRanges(ctx2, { ranges, mode: "keepSpaces" });
-check("keepSpaces lift-deletes without closing", ctx2.calls.length === 1 && ctx2.calls[0].action === "removeRangesBatch", ctx2.calls);
+check("keepSpaces lift-deletes without closing", ctx2.calls.length === 2 && ctx2.calls[0].action === "removeRangesBatch" && !ctx2.calls.some((c) => c.action === "closeRangeGaps"), ctx2.calls);
+check("keepSpaces still relinks the pieces", ctx2.calls[1].action === "tidyTimeline", ctx2.calls);
 
 // --- chunking: chunkSize 1 → one batch call per range, still one close ---
 const ctx2b = makeCtx();

@@ -75,6 +75,9 @@ Apply ladder for big cuts: FCP7-XML round-trip (preserves effects, makes a NEW "
 - Sequence markers are the only recolorable timeline annotation (Premiere cannot recolor TrackItems, DVAPR-4217788); ours are sentinel-tagged in `comments`.
 - Auto-resync must send the same `segment_mode`/`track` as the last explicit load (`loadParams()` is the single source).
 - Cache clearing touches `.cache/{transcripts,levels,rebuild}` only; `usage-log.json` and decisions files stay.
+- **Premiere TRUNCATES `Time.seconds` to ticks**: any position set through seconds lands 1-2 ticks off the frame grid, and the timeline ends up with sub-frame gaps Premiere's Close Gap cannot close plus 1-tick sliver clips. Build every Time from integer ticks (`ticksTime`/`gridTime` in premiere.jsx); `makeTime` now rounds. Batch cuts end with the `tidyTimeline` host op (snap to grid + relink); `removeGaps` snaps first.
+- **A per-track QE razor leaves every piece after the first UNLINKED**; `move`/`end`/`remove` on a linked item touch only that item. Relink = select one V piece + its A mates, `seq.linkSelection()`. In FCP7 XML, Premiere resolves `<link>` by (mediatype, trackindex, clipindex), never by `linkclipref` alone: renumber after a split (`relinkClipitems`).
+- **`project.sequences` is ordered by sequence ID (a UUID), NOT by creation.** Never find a clone by index or "the last one"; capture `sequenceID`s before and after and diff. `deleteSequence` on a mis-picked object deletes the user's real sequence (it happened; recovery = the Auto-Save folder next to the .prproj).
 - Env vars stay `EDITAGENT_*`, localStorage `editagent.*`, `$.editagent` namespace; only user-facing names say OpenCutAgent.
 
 **Headless and cloud AI**
